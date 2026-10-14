@@ -1,0 +1,50 @@
+# Secrets and credentials
+.env
+.env.*
+*.env
+*.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+credentials*.json
+*service-account*.json
+secrets/
+
+# Local or confidential data; reviewed benchmark data stays trackable
+/private/
+/confidential/
+/data/private/
+/data/local/
+
+# Run outputs require an explicit review before inclusion in Git
+/results/
+/logs/
+*.log
+*.tmp
+
+# Python environments, caches, build outputs and test reports
+.venv/
+venv/
+env/
+.conda/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.ipynb_checkpoints/
+
+# Local editor and operating system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini

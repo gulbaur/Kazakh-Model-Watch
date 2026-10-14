@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kazakh-model-watch"
+version = "0.1.0.dev0"
+description = "A small, manually reviewed benchmark of AI models in Kazakh."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = []
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Programming Language :: Python :: 3",
+    "Private :: Do Not Upload",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1"]
+
+[project.urls]
+Repository = "https://github.com/gulbaur/Kazakh-Model-Watch"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["kazakh_model_watch*"]
+namespaces = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
