@@ -2,7 +2,7 @@
 
 Небольшой benchmark AI-моделей на казахском языке с вручную проверенными заданиями и сохранёнными ответами. Приоритет MVP — минимальный работающий pipeline и реальные измерения.
 
-**Статус:** Dataset Loader и Scoring Engine. Добавлены пять черновых заданий, JSONL loader, валидация, детерминированный scoring и pytest-тесты. Все задания ожидают проверки человеком. API-вызовы, CLI и GitHub Actions ещё предстоит реализовать; результатов моделей пока нет.
+**Статус:** Dataset Loader, Scoring Engine, Model Adapter Foundation и OpenRouter Integration. Есть OpenRouter adapter и CLI для одного smoke-запроса с явным `--live`; 2026-10-15 выполнен один подтверждённый вызов `qwen/qwen3.5-9b`, получен ответ `5`. Все пять заданий остаются черновиками. Evaluation Runner, полный benchmark и GitHub Actions ещё предстоит реализовать; результатов полного сравнения пока нет.
 
 Основная техническая спецификация — [docs/MVP_SPEC.md](docs/MVP_SPEC.md). Реализация и критерии готовности определяются этим документом.
 
@@ -33,6 +33,8 @@
 
 ```text
 kazakh-model-watch/
+├── config/
+│   └── openrouter_model.json # публичный снимок возможностей выбранной модели
 ├── data/
 │   ├── benchmark.json       # пустая исходная заготовка; не используется loader
 │   └── benchmark.jsonl      # пять черновых заданий, review.status=draft
@@ -43,11 +45,16 @@ kazakh-model-watch/
 │   └── kazakh_model_watch/
 │       ├── __init__.py
 │       ├── dataset.py       # загрузка и валидация JSONL
+│       ├── model_adapter.py # ModelRequest, ModelResponse, интерфейс и offline mock
 │       ├── normalization.py # общая нормализация kk-short-v1
+│       ├── openrouter_adapter.py
+│       ├── openrouter_smoke.py
 │       └── scoring.py       # exact match и normalized correctness
 ├── tests/
 │   ├── .gitkeep
 │   ├── test_dataset.py
+│   ├── test_model_adapter.py
+│   ├── test_openrouter_adapter.py
 │   └── test_scoring.py
 ├── .gitignore
 ├── LICENSE
@@ -59,7 +66,7 @@ kazakh-model-watch/
 
 ## Локальное окружение
 
-Python **3.11+**. Обычный `venv` и `pip` достаточны; отдельный менеджер окружения не требуется. `pyproject.toml` содержит метаданные, стандартный setuptools backend и фиксированные прямые build/dev зависимости. Runtime-зависимости и SDK будут добавлены после выбора моделей.
+Python **3.11+**. Обычный `venv` и `pip` достаточны; отдельный менеджер окружения не требуется. `pyproject.toml` фиксирует прямые зависимости: setuptools, pytest, HTTPX для HTTP и python-dotenv для явной локальной загрузки ключа. SDK провайдера не используется.
 
 Из корня репозитория, PowerShell:
 
@@ -75,7 +82,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[dev]"
 ```
 
-Активация окружения не обязательна: команды используют его интерпретатор напрямую. Установка добавляет пакет с loader и `pytest`; исполняемой команды benchmark ещё нет. Конфигурация setuptools использует существующий `src/`, тесты находятся в `tests/`.
+Активация окружения не обязательна: команды используют его интерпретатор напрямую. Установка добавляет пакет и зависимости; полный benchmark ещё не реализован. Конфигурация setuptools использует существующий `src/`, тесты находятся в `tests/`.
 
 Запуск тестов из корня:
 
@@ -122,9 +129,63 @@ scores = score_response(
 
 Любой `status != "ok"` даёт нули по обеим оценкам, даже при совпадающем тексте. `None`, пустой и пробельный текст также дают нули. Для `status="ok"` текст другого типа вызывает `TypeError`; автоматического преобразования в строку нет. Числа из объяснений не извлекаются, Markdown и пунктуация не удаляются, похожие буквы и zero-width символы сохраняются. Исходные ответы и эталоны не изменяются. Scoring работает локально, без API; агрегация, runner и экспорт на этом этапе не реализованы.
 
+## Model Adapter Foundation
+
+`ModelRequest` и `ModelResponse` — dataclass-структуры с проверкой типов и значений при создании. Их поля сохраняют исходный prompt и видимый ответ; атрибуты нельзя переназначать. В запросе — provider, model ID, полный prompt и параметры; defaults из спецификации: temperature `0`, max output tokens `128`, timeout `60` секунд. Prompt собирается вызывающим кодом; адаптер не добавляет инструкции и не получает эталоны.
+
+Ответ содержит восемь полей: `status`, `raw_response`, `requested_model_id`, `returned_model_id`, `request_id`, `finish_reason`, `usage`, `latency_ms`. Неизвестные metadata/usage/latency остаются `None`; нулевые счётчики и latency не заменяются на `None`. У `ok` должен быть непробельный текст, а ошибки и обрывы имеют `latency_ms=None`, поскольку успешная попытка отсутствует. `usage` содержит только неотрицательные целочисленные счётчики токенов; их значения не вычисляются из длины текста.
+
+`ModelAdapter` задаёт единственный синхронный метод `generate(request) -> response` и сам использует только стандартную библиотеку. Плагинов и registry нет; конкретная интеграция OpenRouter описана ниже. Таймер и повторы полного benchmark, `attempts`, `error` и `total_elapsed_ms` относятся к будущему runner; на этом этапе он не реализуется.
+
+Offline-пример с явно синтетическим ответом:
+
+```python
+from kazakh_model_watch.model_adapter import MockAdapter, ModelRequest, ModelResponse
+
+request = ModelRequest(provider="mock", model_id="mock-model", prompt="Тек жауапты жазыңыз.")
+preset = ModelResponse(status="ok", raw_response="5", requested_model_id="mock-model")
+response = MockAdapter(preset).generate(request)
+```
+
+Mock возвращает копию заранее заданного `ModelResponse`, без сети, задержек и измерения времени. Для сценариев timeout/API error задаются соответствующий статус и `raw_response=None`; для пустого ответа — `empty_response`. Тип и статус ошибочного ответа не меняются автоматически. Mock принимает только `provider="mock"` и model ID своего preset; шаблон и результаты отдельных вызовов не разделяют изменяемый словарь usage.
+
+Ответы, ID, usage и latency mock являются тестовыми fixtures, а не измерениями реальной модели. Провайдер `mock` и его результаты должны исключаться из любого реального сравнения и leaderboard. API-ключи не нужны и не входят в структуры запроса/ответа.
+
+## OpenRouter: один smoke test
+
+`OpenRouterAdapter` использует [Chat Completions API](https://openrouter.ai/docs/api/api-reference/chat/create-a-chat-completion) и существующий `ModelAdapter`. Передаётся полный prompt из `ModelRequest`, один user message, temperature `0`, max tokens `128`, timeout `60`, stream `false`. Настройки не меняются автоматически; профиль или модель, не соответствующие metadata, дают безопасный код ошибки до платного вызова.
+
+Поддержка temperature/max_tokens для `qwen/qwen3.5-9b` проверена через публичный [Models API](https://openrouter.ai/api/v1/models); выбранные поля сохранены в [config/openrouter_model.json](config/openrouter_model.json) с датой проверки. Снимок загружается локально, поэтому во время генерации дополнительных GET нет. `provider.require_parameters=true` требует поддержки параметров конкретным backend; `allow_fallbacks=false` отключает fallback провайдера согласно [правилам маршрутизации](https://openrouter.ai/docs/guides/routing/provider-selection). Список запасных моделей не передаётся.
+
+Offline-проверка команды из корня проекта — без сети, ключа и чтения `.env`:
+
+```powershell
+.\.venv\Scripts\python.exe -m kazakh_model_watch.openrouter_smoke
+```
+
+После отдельного подтверждения одного платного запроса:
+
+```powershell
+.\.venv\Scripts\python.exe -m kazakh_model_watch.openrouter_smoke --live --dotenv
+```
+
+`--dotenv` читает только локальный `.env` при наличии `--live` и не перезаписывает уже заданные переменные окружения. Адаптер берёт ключ только из `OPENROUTER_API_KEY`. Без `--dotenv` ключ необходимо заранее задать в окружении; команда и её вывод не содержат значения ключа. Из Linux/macOS использовать `.venv/bin/python` вместо Windows-пути.
+
+Smoke выполняет ровно один POST для фиксированной модели и задания: «Екіге үшті қосқанда қанша болады? Жауапты тек бүтін санмен жазыңыз.» HTTP redirects и retries отключены. Команда не загружает весь датасет, не пишет leaderboard и не запускается автоматически в pytest/CI. Unit-тесты, включая проверку ветки `--live`, используют исключительно `httpx.MockTransport`, синтетический ключ и подменённую загрузку dotenv.
+
+Вывод содержит поля `ModelResponse`, измеренный `elapsed_ms`, диагностический `http_status` и статический `error_code`. `elapsed_ms` измеряет весь вызов generate, включая HTTP и преобразование ответа; до HTTP-попытки остаётся `None`. `ModelResponse.latency_ms` остаётся `None`: измерение latency для benchmark относится к будущему runner. Код выхода `0` означает ok, `1` — ошибку, пустой или обрезанный ответ. Raw text не нормализуется и не оценивается этой командой.
+
+HTTP ошибки, timeout, пустой/обрезанный ответ и некорректная схема обрабатываются явно. Текст исключений, тела ошибок и Authorization header не выводятся. Если сервер отражает ключ в JSON, ответ отклоняется целиком с `sensitive_response`. `usage` сохраняет только сообщённые API целочисленные счётчики токенов; вложенные token details представлены через dotted keys. Пропущенные счётчики не вычисляются, cost-поля не превращаются в стоимость или токены.
+
+Реальная проверка 2026-10-15: ровно один подтверждённый POST, HTTP `200`, status `ok`, requested/returned model ID `qwen/qwen3.5-9b`, raw response `5`, finish reason `stop`, измеренный `elapsed_ms=7116.382699459791`. API сообщил prompt/completion/total tokens `83/293/376`, включая `291` reasoning token. Вывод сохранён локально в игнорируемом `logs/`; это проверка интеграции на одном задании, без результатов benchmark и leaderboard. Стоимость не рассчитывалась.
+
+При переданном `max_tokens=128` API сообщил `completion_tokens=293`. Счётчики сохранены как получены; причина расхождения для выбранного backend не установлена. По [документации OpenRouter](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens#reasoning-tokens-and-max_tokens), у большинства провайдеров reasoning и видимый ответ делят этот лимит. Перед полноценным сравнением нужно проверить фактическую семантику лимита для этого endpoint. Параметры запроса и спецификация по результату smoke не изменялись, дополнительных вызовов не было.
+
+Ограничения: снимок Models API может устареть; require_parameters проверяется при маршрутизации, но доступность и quota подтверждаются только реальным вызовом. Alias модели может изменяться, возвращённый ID сохраняется. Поддерживается один текстовый completion; tool calls, массивы content и неожиданные модели отклоняются. HTTPX timeout задаётся для сетевых фаз, отдельного общего deadline нет. Provider reasoning defaults не меняются; finish_reason=length всегда даёт truncated. CLI рассчитан на локальную editable-установку и присутствие config-файла; это не Evaluation Runner.
+
 ## Ключи и локальные данные
 
-Ключи будут читаться из переменных окружения; в GitHub Actions — из GitHub Secrets. Для текущей настройки ключи не нужны. `.env` и его варианты, файлы ключей, `secrets/`, локальные данные и `results/` игнорируются Git. Допустимый `.env.example` должен содержать только пустые значения или явные placeholders; сейчас этот файл не создаётся.
+Ключи читаются из переменных окружения; в будущем GitHub Actions будет использовать GitHub Secrets. Для offline-тестов ключи не нужны. `.env` и его варианты, файлы ключей, `secrets/`, локальные данные и `results/` игнорируются Git. `.env.example` должен содержать только пустые значения или явные placeholders; настоящий ключ в шаблон не добавляется.
 
 Запрещено добавлять API-ключи, `.env`, конфиденциальные данные или материалы работодателя даже в PRIVATE-репозиторий. Используются только оригинальные задания либо разрешённые публичные источники. Проверенный датасет и документация остаются доступными для включения в Git; общие шаблоны `*.json` и `*.csv` не игнорируются.
 

@@ -1,0 +1,16 @@
+{
+  "source_url": "https://openrouter.ai/api/v1/models",
+  "checked_on": "2026-10-14",
+  "model": {
+    "id": "qwen/qwen3.5-9b",
+    "canonical_slug": "qwen/qwen3.5-9b-20260310",
+    "supported_parameters": [
+      "frequency_penalty", "include_reasoning", "logit_bias", "logprobs",
+      "max_tokens", "min_p", "presence_penalty", "reasoning",
+      "repetition_penalty", "response_format", "seed", "stop",
+      "structured_outputs", "temperature", "tool_choice", "tools",
+      "top_k", "top_logprobs", "top_p"
+    ],
+    "top_provider": {"max_completion_tokens": 32768}
+  }
+}
