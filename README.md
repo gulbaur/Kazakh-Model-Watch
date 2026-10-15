@@ -2,7 +2,7 @@
 
 Небольшой benchmark AI-моделей на казахском языке с вручную проверенными заданиями и сохранёнными ответами. Приоритет MVP — минимальный работающий pipeline и реальные измерения.
 
-**Статус:** Dataset Loader, Scoring Engine, Model Adapter Foundation и OpenRouter Integration. Есть OpenRouter adapter и CLI для одного smoke-запроса с явным `--live`; 2026-10-15 выполнен один подтверждённый вызов `qwen/qwen3.5-9b`, получен ответ `5`. Все пять заданий остаются черновиками. Evaluation Runner, полный benchmark и GitHub Actions ещё предстоит реализовать; результатов полного сравнения пока нет.
+**Статус:** Dataset Loader, Scoring Engine, Model Adapter Foundation и OpenRouter Integration. Есть OpenRouter adapter и CLI для одного smoke-запроса с явным `--live`; 2026-10-15 выполнен один подтверждённый вызов `qwen/qwen3.5-9b`, получен ответ `5`. Все пять заданий остаются черновиками. Offline workflow GitHub Actions реализован; CI успешно проходит на Python 3.11 и 3.13. Evaluation Runner и полный benchmark ещё предстоит реализовать; результатов полного сравнения пока нет.
 
 Основная техническая спецификация — [docs/MVP_SPEC.md](docs/MVP_SPEC.md). Реализация и критерии готовности определяются этим документом.
 
@@ -72,14 +72,14 @@ Python **3.11+**. Обычный `venv` и `pip` достаточны; отде�
 
 ```powershell
 py -3 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]" pytest-socket==0.7.0
 ```
 
 Linux/macOS:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install -e ".[dev]"
+.venv/bin/python -m pip install -e ".[dev]" pytest-socket==0.7.0
 ```
 
 Активация окружения не обязательна: команды используют его интерпретатор напрямую. Установка добавляет пакет и зависимости; полный benchmark ещё не реализован. Конфигурация setuptools использует существующий `src/`, тесты находятся в `tests/`.
@@ -87,10 +87,10 @@ python3 -m venv .venv
 Запуск тестов из корня:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest
+.\.venv\Scripts\python.exe -m pytest -q --disable-socket
 ```
 
-На Linux/macOS использовать `.venv/bin/python -m pytest`. Тесты проверяют контракт датасета, включая некорректные данные и финальный режим; они не доказывают языковую правильность черновиков. Метаданные `verified` в тестовых fixtures синтетические и не являются отметками реальной проверки. Команды `validate`, `run` и `report` будут документированы вместе с их реализацией.
+На Linux/macOS использовать `.venv/bin/python -m pytest -q --disable-socket`. Плагин pytest-socket блокирует сетевые соединения на время тестов, как в CI. Локальная команда использует стандартную автозагрузку установленного плагина; в CI автозагрузка отключена и плагин подключается явно через `-p pytest_socket`. Тесты проверяют контракт датасета, включая некорректные данные и финальный режим; они не доказывают языковую правильность черновиков. Метаданные `verified` в тестовых fixtures синтетические и не являются отметками реальной проверки. Команды `validate`, `run` и `report` будут документированы вместе с их реализацией.
 
 ## Dataset Loader
 
