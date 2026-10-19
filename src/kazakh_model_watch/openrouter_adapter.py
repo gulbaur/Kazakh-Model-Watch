@@ -1,7 +1,10 @@
 """One OpenRouter invocation with explicit capabilities and safe diagnostics."""
 
 import os
+import math
 from copy import deepcopy
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -14,6 +17,23 @@ COMMON_INSTRUCTION = (
     "Тапсырманы орындаңыз. Жауапты сұралған форматта ғана жазыңыз. "
     "Түсіндірме қоспаңыз."
 )
+
+
+def _retry_after(value: str | None) -> float | None:
+    """Parse seconds or an HTTP date, retaining values above the retry cap."""
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            date = parsedate_to_datetime(value)
+            if date.tzinfo is None:
+                return None
+            seconds = max(0.0, (date - datetime.now(timezone.utc)).total_seconds())
+        except (ValueError, TypeError, OverflowError):
+            return None
+    return seconds if math.isfinite(seconds) and seconds >= 0 else None
 
 
 def _optional_text(value: Any) -> str | None:
@@ -81,7 +101,12 @@ class OpenRouterAdapter(ModelAdapter):
             raise TypeError("model_metadata must be a Models API object")
         self._model_metadata = deepcopy(model_metadata)
         self._transport = transport
+        self._retry_after_s: float | None = None
         self.last_diagnostic: dict[str, str | int | bool | None] = {}
+
+    def get_diagnostic(self) -> dict[str, str | int | float | bool | None]:
+        """Return a copy; preserve the existing last_diagnostic shape."""
+        return {**self.last_diagnostic, "retry_after_s": self._retry_after_s}
 
     def _failure(
         self, request: ModelRequest, code: str, *, status: str = "api_error",
@@ -120,6 +145,7 @@ class OpenRouterAdapter(ModelAdapter):
         if not isinstance(request, ModelRequest):
             raise TypeError("request must be a ModelRequest")
         self.last_diagnostic = {"error_code": None, "http_status": None, "request_attempted": False}
+        self._retry_after_s = None
         if request.provider != "openrouter":
             return self._failure(request, "invalid_provider")
         if request.temperature != 0 or request.max_output_tokens != 128 or request.timeout_s != 60:
@@ -152,6 +178,8 @@ class OpenRouterAdapter(ModelAdapter):
             return self._failure(request, "invalid_http_request")
 
         self.last_diagnostic["http_status"] = response.status_code
+        header = response.headers.get("Retry-After")
+        self._retry_after_s = _retry_after(header) if header is None or api_key not in header else None
         try:
             body = response.json()
         except ValueError:

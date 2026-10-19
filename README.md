@@ -2,7 +2,7 @@
 
 Небольшой benchmark AI-моделей на казахском языке с вручную проверенными заданиями и сохранёнными ответами. Приоритет MVP — минимальный работающий pipeline и реальные измерения.
 
-**Статус:** Dataset Loader, Scoring Engine, Model Adapter Foundation и OpenRouter Integration. Есть OpenRouter adapter и CLI для одного smoke-запроса с явным `--live`; 2026-10-15 выполнен один подтверждённый вызов `qwen/qwen3.5-9b`, получен ответ `5`. Все пять заданий остаются черновиками. Offline workflow GitHub Actions реализован; CI успешно проходит на Python 3.11 и 3.13. Evaluation Runner и полный benchmark ещё предстоит реализовать; результатов полного сравнения пока нет.
+**Статус:** Dataset Loader, Scoring Engine, Model Adapter Foundation, OpenRouter Integration и offline foundation Evaluation Runner. Есть CLI `validate` / `run` / `report`, локальные артефакты и synthetic mock-режим. Все пять заданий остаются черновиками; две реальные модели в конфигурации имеют статус `not_ready`. 2026-10-15 выполнен один подтверждённый smoke-вызов `qwen/qwen3.5-9b`, получен ответ `5`. Offline workflow GitHub Actions реализован; базовая интеграция проверена CI на Python 3.11 и 3.13. Новых live-вызовов и полного реального сравнения на этапе runner не было.
 
 Основная техническая спецификация — [docs/MVP_SPEC.md](docs/MVP_SPEC.md). Реализация и критерии готовности определяются этим документом.
 
@@ -33,8 +33,11 @@
 
 ```text
 kazakh-model-watch/
+├── .github/                 # offline CI, шаблоны issue/PR и safety check
 ├── config/
-│   └── openrouter_model.json # публичный снимок возможностей выбранной модели
+│   ├── openrouter_model.json # исходный публичный снимок для smoke CLI
+│   ├── models.json           # два реальных кандидата, пока not_ready
+│   └── mock_models.json      # два явно синтетических offline mock
 ├── data/
 │   ├── benchmark.json       # пустая исходная заготовка; не используется loader
 │   └── benchmark.jsonl      # пять черновых заданий, review.status=draft
@@ -44,25 +47,35 @@ kazakh-model-watch/
 │   ├── .gitkeep
 │   └── kazakh_model_watch/
 │       ├── __init__.py
+│       ├── __main__.py      # CLI validate / run / report
+│       ├── config.py        # offline-валидация публичной конфигурации
 │       ├── dataset.py       # загрузка и валидация JSONL
 │       ├── model_adapter.py # ModelRequest, ModelResponse, интерфейс и offline mock
 │       ├── normalization.py # общая нормализация kk-short-v1
 │       ├── openrouter_adapter.py
 │       ├── openrouter_smoke.py
+│       ├── runner.py        # preflight, последовательные вызовы, retry
+│       ├── reporting.py     # атомарные артефакты и offline report
 │       └── scoring.py       # exact match и normalized correctness
 ├── tests/
 │   ├── .gitkeep
+│   ├── conftest.py
+│   ├── test_cli.py
+│   ├── test_config.py
 │   ├── test_dataset.py
 │   ├── test_model_adapter.py
 │   ├── test_openrouter_adapter.py
+│   ├── test_reporting.py
+│   ├── test_runner.py
 │   └── test_scoring.py
 ├── .gitignore
+├── AGENTS.md
 ├── LICENSE
 ├── README.md
 └── pyproject.toml
 ```
 
-`data/benchmark.jsonl` содержит черновики для разработки: два задания numbers, два dates и одно morphology. Эталоны — кандидаты для будущей ручной проверки. API-конфигурация, `results/<run_id>/` и `LEADERBOARD.md` появятся на соответствующих этапах.
+`data/benchmark.jsonl` содержит черновики для разработки: два задания numbers, два dates и одно morphology. Эталоны — кандидаты для будущей ручной проверки. Публичные конфигурации находятся в `config/`; артефакты запуска создаются в игнорируемом `results/<run_id>/`. Корневой `LEADERBOARD.md` на этом этапе не формируется.
 
 ## Локальное окружение
 
@@ -82,7 +95,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[dev]" pytest-socket==0.7.0
 ```
 
-Активация окружения не обязательна: команды используют его интерпретатор напрямую. Установка добавляет пакет и зависимости; полный benchmark ещё не реализован. Конфигурация setuptools использует существующий `src/`, тесты находятся в `tests/`.
+Активация окружения не обязательна: команды используют его интерпретатор напрямую. Установка добавляет пакет, зависимости и CLI через `python -m kazakh_model_watch`. Конфигурация setuptools использует существующий `src/`, тесты находятся в `tests/`.
 
 Запуск тестов из корня:
 
@@ -90,7 +103,38 @@ python3 -m venv .venv
 .\.venv\Scripts\python.exe -m pytest -q --disable-socket
 ```
 
-На Linux/macOS использовать `.venv/bin/python -m pytest -q --disable-socket`. Плагин pytest-socket блокирует сетевые соединения на время тестов, как в CI. Локальная команда использует стандартную автозагрузку установленного плагина; в CI автозагрузка отключена и плагин подключается явно через `-p pytest_socket`. Тесты проверяют контракт датасета, включая некорректные данные и финальный режим; они не доказывают языковую правильность черновиков. Метаданные `verified` в тестовых fixtures синтетические и не являются отметками реальной проверки. Команды `validate`, `run` и `report` будут документированы вместе с их реализацией.
+На Linux/macOS использовать `.venv/bin/python -m pytest -q --disable-socket`. Плагин pytest-socket блокирует сетевые соединения на время тестов, как в CI. Локальная команда использует стандартную автозагрузку установленного плагина; в CI автозагрузка отключена и плагин подключается явно через `-p pytest_socket`. Тесты проверяют loader, scoring, adapters, конфигурацию, CLI, retry и локальные артефакты. Они не доказывают языковую правильность черновиков. Метаданные `verified` и capability metadata в новых runner fixtures синтетические и не подтверждают реальную ручную проверку или вызов модели.
+
+## Evaluation Runner: offline foundation
+
+Все команды выполняются из корня проекта. В Linux/macOS заменить Windows-путь на `.venv/bin/python`.
+
+Offline-проверка чернового датасета и конфигурации, без ключа, чтения `.env` и запросов metadata:
+
+```powershell
+.\.venv\Scripts\python.exe -m kazakh_model_watch validate --development
+```
+
+Без `--development` команда `validate` проверяет финальные 24 verified задания (по 8 на категорию) и готовность обеих моделей. Текущие пять draft эту проверку не проходят. Валидация структуры не устанавливает факт человеческой проверки.
+
+Локальная разработка на двух mock-моделях:
+
+```powershell
+.\.venv\Scripts\python.exe -m kazakh_model_watch run --mock --config config/mock_models.json --run-id offline-demo-001
+.\.venv\Scripts\python.exe -m kazakh_model_watch report results/offline-demo-001
+```
+
+Это синтетические ответы для проверки pipeline; mock не получает эталоны и не подставляет правильные ответы. Его usage по умолчанию неизвестен, latency и elapsed остаются `null`. Повторное использование `run_id` запрещено: выбрать новый ID либо опустить `--run-id` для автоматической генерации. CLI не перезаписывает прежние запуски и не возобновляет генерацию; `report` только пересчитывает существующий запуск offline, включая неполный, без ключей и адаптеров.
+
+Для реального `run` нужен явный `--live` и отдельное разрешение владельца на расходы. До конструирования адаптеров проверяются финальный датасет, весь конфиг, готовность двух моделей, общий профиль и все ENV-ключи. Без opt-in сетевых вызовов нет. `.env` runner не загружает; ключ берётся только из `OPENROUTER_API_KEY`. В этой issue реальный `run` не выполнялся.
+
+В [config/models.json](config/models.json) отдельно настроены `qwen/qwen3.5-9b` и `google/gemini-3.1-flash-lite`. Публичные Models/Endpoints metadata проверены 2026-10-19 и сохранены без тарифов и ключей. Поддержка имён temperature/max_tokens объявлена, но точная совместимость лимита **видимого** ответа не подтверждена; у Gemini metadata указывают включённый по умолчанию reasoning. Поэтому оба кандидата остаются `not_ready` с причинами и `profile_verified=false`. Этот флаг — поле локального согласования, не свидетельство API; не менять его без review. Неподдерживаемые настройки не заменяются автоматически. Профиль сохранён: temperature 0, max output tokens 128, timeout 60, stream false, один user message с общей инструкцией.
+
+Порядок заданий перемешивается локальным `Random(42)`, порядок моделей циклически чередуется. Runner делает максимум две попытки: повтор только после timeout, network error или HTTP 429/5xx. Ожидание — максимум из 2 секунд и Retry-After; при Retry-After больше 60 секунд повтора нет. Поддерживается Retry-After в секундах и в формате HTTP-date; сохраняются разобранная задержка, история реальных попыток, запланированный `retry_delay_s` и факт завершения ожидания `retry_wait_completed`. Качество ответа, 401/402, content_filter, empty_response и truncated не вызывают повторов. Внутренних retries/fallback у адаптера нет.
+
+В `results/<run_id>/` сохраняются `manifest.json`, точные входные `dataset.jsonl` и `config.json`, `responses.json/csv`, `metrics.json/csv` и `leaderboard.md`. Manifest фиксирует версии протокола/датасета/scoring/Unicode, SHA256 входов и инструкции, Git SHA/dirty, окружение, профиль и фактический порядок. Неизвестные версии зависимостей остаются `null`, включая build-only setuptools при изолированной сборке. JSON заменяется атомарно после каждой попытки; при прерывании manifest остаётся `incomplete`, уже полученные ответы сохраняются, отсутствующие пары имеют `not_run` и неизвестное время. Report проверяет snapshots, идентичность пар и retry-цепочки и пересчитывает scoring по целому ответу.
+
+Accuracy, exact match и coverage используют полный знаменатель; сохраняются статусы и разбивка по категориям. Latency реального вызова измеряется монотонным таймером; среднее/медиана берутся только по `ok`, включая неверные ответы. Usage хранится по каждой попытке, отсутствующие счётчики не вычисляются. Стоимость не собирается: `null` / `N/A` с причиной. Файл `leaderboard.md` внутри mock-каталога явно помечен **OFFLINE SYNTHETIC**, неполный запуск — **incomplete**. Публикация корневого leaderboard и реальный benchmark не входят в текущий этап. Риск лимита токенов из [Task 5 review](docs/TASK5_REVIEW.md) остаётся открытым.
 
 ## Dataset Loader
 
@@ -127,7 +171,7 @@ scores = score_response(
 
 Эталоны передаются из проверенного loader датасета. `exact_match` сравнивает полный ответ с `reference_answer` через равенство Python Unicode-строк, без преобразований. `correct` сравнивает полный ответ со всеми `accepted_answers` после общей нормализации `kk-short-v1`: NFC → удаление пробелов по краям и свёртка внутренних Unicode whitespace → casefold. Эта же функция используется loader для проверки дубликатов вариантов.
 
-Любой `status != "ok"` даёт нули по обеим оценкам, даже при совпадающем тексте. `None`, пустой и пробельный текст также дают нули. Для `status="ok"` текст другого типа вызывает `TypeError`; автоматического преобразования в строку нет. Числа из объяснений не извлекаются, Markdown и пунктуация не удаляются, похожие буквы и zero-width символы сохраняются. Исходные ответы и эталоны не изменяются. Scoring работает локально, без API; агрегация, runner и экспорт на этом этапе не реализованы.
+Любой `status != "ok"` даёт нули по обеим оценкам, даже при совпадающем тексте. `None`, пустой и пробельный текст также дают нули. Для `status="ok"` текст другого типа вызывает `TypeError`; автоматического преобразования в строку нет. Числа из объяснений не извлекаются, Markdown и пунктуация не удаляются, похожие буквы и zero-width символы сохраняются. Исходные ответы и эталоны не изменяются. Scoring работает локально, без API; runner и offline report переиспользуют эту функцию перед агрегацией и экспортом.
 
 ## Model Adapter Foundation
 
@@ -135,7 +179,9 @@ scores = score_response(
 
 Ответ содержит восемь полей: `status`, `raw_response`, `requested_model_id`, `returned_model_id`, `request_id`, `finish_reason`, `usage`, `latency_ms`. Неизвестные metadata/usage/latency остаются `None`; нулевые счётчики и latency не заменяются на `None`. У `ok` должен быть непробельный текст, а ошибки и обрывы имеют `latency_ms=None`, поскольку успешная попытка отсутствует. `usage` содержит только неотрицательные целочисленные счётчики токенов; их значения не вычисляются из длины текста.
 
-`ModelAdapter` задаёт единственный синхронный метод `generate(request) -> response` и сам использует только стандартную библиотеку. Плагинов и registry нет; конкретная интеграция OpenRouter описана ниже. Таймер и повторы полного benchmark, `attempts`, `error` и `total_elapsed_ms` относятся к будущему runner; на этом этапе он не реализуется.
+`ModelAdapter` задаёт синхронный метод `generate(request) -> response` и сам использует только стандартную библиотеку. Плагинов и registry нет; конкретная интеграция OpenRouter описана ниже. Таймер, ограниченные повторы, `attempts`, `error` и `total_elapsed_ms` относятся к runner.
+
+Минимальное расширение для review issue #3 — необязательный `get_diagnostic()`, по умолчанию возвращающий `{}`. OpenRouter возвращает копию безопасных `http_status`, `error_code`, `request_attempted`, `retry_after_s`; тело ошибки и заголовки туда не попадают. Исходные восемь полей ModelResponse, `generate()` и прежний `last_diagnostic` сохранены. Без диагностики `api_error` не считается сетевым сбоем и не повторяется; известный `timeout` допускает повтор по общему правилу.
 
 Offline-пример с явно синтетическим ответом:
 
@@ -173,7 +219,7 @@ Offline-проверка команды из корня проекта — бе�
 
 Smoke выполняет ровно один POST для фиксированной модели и задания: «Екіге үшті қосқанда қанша болады? Жауапты тек бүтін санмен жазыңыз.» HTTP redirects и retries отключены. Команда не загружает весь датасет, не пишет leaderboard и не запускается автоматически в pytest/CI. Unit-тесты, включая проверку ветки `--live`, используют исключительно `httpx.MockTransport`, синтетический ключ и подменённую загрузку dotenv.
 
-Вывод содержит поля `ModelResponse`, измеренный `elapsed_ms`, диагностический `http_status` и статический `error_code`. `elapsed_ms` измеряет весь вызов generate, включая HTTP и преобразование ответа; до HTTP-попытки остаётся `None`. `ModelResponse.latency_ms` остаётся `None`: измерение latency для benchmark относится к будущему runner. Код выхода `0` означает ok, `1` — ошибку, пустой или обрезанный ответ. Raw text не нормализуется и не оценивается этой командой.
+Вывод содержит поля `ModelResponse`, измеренный `elapsed_ms`, диагностический `http_status` и статический `error_code`. `elapsed_ms` измеряет весь вызов generate, включая HTTP и преобразование ответа; до HTTP-попытки остаётся `None`. В smoke CLI `ModelResponse.latency_ms` остаётся `None`; evaluation runner измеряет свои попытки отдельно. Код выхода `0` означает ok, `1` — ошибку, пустой или обрезанный ответ. Raw text не нормализуется и не оценивается этой командой.
 
 HTTP ошибки, timeout, пустой/обрезанный ответ и некорректная схема обрабатываются явно. Текст исключений, тела ошибок и Authorization header не выводятся. Если сервер отражает ключ в JSON, ответ отклоняется целиком с `sensitive_response`. `usage` сохраняет только сообщённые API целочисленные счётчики токенов; вложенные token details представлены через dotted keys. Пропущенные счётчики не вычисляются, cost-поля не превращаются в стоимость или токены.
 
