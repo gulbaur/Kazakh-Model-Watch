@@ -111,6 +111,14 @@ class ModelAdapter(ABC):
         """Return text/metadata or a typed failure status for one model request."""
         raise NotImplementedError
 
+    def get_diagnostic(self) -> dict[str, str | int | float | bool | None]:
+        """Optional safe metadata for the last invocation; never raw errors.
+
+        Existing adapters need not override this. A runner must not infer HTTP
+        failures or retry delays from response text when metadata is absent.
+        """
+        return {}
+
 
 class MockAdapter(ModelAdapter):
     """Return a preset synthetic response; never call a provider or measure time.

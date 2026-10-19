@@ -418,3 +418,34 @@ def test_saved_capabilities_are_a_public_models_api_snapshot():
     assert snapshot["source_url"] == "https://openrouter.ai/api/v1/models"
     assert snapshot["model"]["id"] == MODEL_ID
     assert {"temperature", "max_tokens"}.issubset(snapshot["model"]["supported_parameters"])
+
+
+@pytest.mark.parametrize(("header", "expected"), [("0", 0), ("2", 2), ("60", 60), ("61", 61), ("bad", None), ("nan", None), ("-1", None)])
+def test_retry_after_is_safe_optional_metadata_without_retry(metadata, model_request, header, expected):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(429, headers={"Retry-After": header}, json={"error": {"message": "Synthetic failure"}})
+    adapter = OpenRouterAdapter(metadata, transport=httpx.MockTransport(handler))
+    assert adapter.generate(model_request).status == "api_error"
+    assert adapter.get_diagnostic()["retry_after_s"] == expected
+    assert len(calls) == 1
+    copy = adapter.get_diagnostic()
+    copy["http_status"] = 200
+    assert adapter.last_diagnostic["http_status"] == 429
+
+
+def test_retry_after_http_date_and_reset(metadata, model_request):
+    from kazakh_model_watch.openrouter_adapter import _retry_after
+    assert _retry_after("Wed, 21 Oct 2015 07:28:00 GMT") == 0
+    assert _retry_after("Fri, 01 Jan 2100 00:00:00 GMT") > 60
+    assert _retry_after("inf") is None
+    adapter, calls = _adapter(metadata, _body())
+    assert adapter.generate(model_request).status == "ok"
+    assert adapter.get_diagnostic()["retry_after_s"] is None
+
+
+def test_default_adapter_diagnostic_is_backwards_compatible(model_request):
+    from kazakh_model_watch.model_adapter import MockAdapter, ModelResponse
+    mock = MockAdapter(ModelResponse(status="ok", raw_response="synthetic", requested_model_id="mock-fixture"))
+    assert mock.get_diagnostic() == {}

@@ -1,0 +1,35 @@
+{
+  "protocol_version": "mvp-v1",
+  "scoring_version": "binary-v1",
+  "normalization_version": "kk-short-v1",
+  "dataset_version": "kk-mvp-v1-draft",
+  "order_seed": 42,
+  "common_instruction": "Тапсырманы орындаңыз. Жауапты сұралған форматта ғана жазыңыз. Түсіндірме қоспаңыз.",
+  "profile": {
+    "temperature": 0,
+    "max_output_tokens": 128,
+    "timeout_s": 60,
+    "stream": false,
+    "message_role": "user"
+  },
+  "models": [
+    {
+      "key": "mock_1",
+      "provider": "mock",
+      "model_id": "mock-model-1",
+      "api_key_env": null,
+      "readiness": "ready",
+      "readiness_reason": null,
+      "metadata": null
+    },
+    {
+      "key": "mock_2",
+      "provider": "mock",
+      "model_id": "mock-model-2",
+      "api_key_env": null,
+      "readiness": "ready",
+      "readiness_reason": null,
+      "metadata": null
+    }
+  ]
+}
