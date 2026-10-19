@@ -1,0 +1,43 @@
+name: Задача для Codex
+description: Реализация в VS Code и проверка Tech Lead через PR
+title: "[Task] "
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Ожидаемый результат
+      description: Какое поведение должно измениться и зачем?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Объём и ограничения
+      description: Какие файлы можно менять? Какие локальные изменения уже есть? Не вставляйте ключи и сырые logs.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Критерии приёмки
+      value: |
+        - [ ] Изменение соответствует согласованному объёму.
+        - [ ] Offline pytest проходит с --disable-socket.
+        - [ ] Проверены diff, новые файлы и отсутствие секретов.
+        - [ ] Подготовлен PR в main со ссылкой на issue и результатами CI.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Контекст и решения Tech Lead
+      description: Ссылки на spec, связанный PR, SHA и открытые вопросы; никаких .env и сырых ответов API.
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Правила выполнения
+      options:
+        - label: Платные API-вызовы и benchmark не входят в эту задачу; для них нужно отдельное разрешение.
+          required: true
+        - label: Commit/push выполняются после проверки и разрешения пользователя; merge согласуется отдельно.
+          required: true
