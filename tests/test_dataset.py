@@ -68,12 +68,13 @@ def test_development_loads_one_draft_and_preserves_data(tmp_path):
     assert path.read_bytes() == original_bytes
 
 
-def test_repository_dataset_contains_five_unreviewed_drafts():
+def test_repository_dataset_contains_24_unreviewed_drafts():
     path = Path(__file__).resolve().parents[1] / "data" / "benchmark.jsonl"
     records = load_dataset(path)
 
-    assert len(records) == 5
+    assert len(records) == 24
     assert {record["category"] for record in records} == {"numbers", "dates", "morphology"}
+    assert all(sum(r["category"] == category for r in records) == 8 for category in ("numbers", "dates", "morphology"))
     assert all(record["review"]["status"] == "draft" for record in records)
     assert all(record["review"]["reviewer_id"] is None for record in records)
     assert all(record["review"]["reviewed_at"] is None for record in records)
