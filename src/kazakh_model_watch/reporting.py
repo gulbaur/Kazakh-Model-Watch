@@ -26,6 +26,7 @@ ERROR_CODES = {
     "missing_api_key", "invalid_api_key", "request_timeout", "network_error",
     "invalid_http_request", "http_error", "malformed_response", "sensitive_response",
     "provider_error", "unexpected_model_id", "content_filtered", "unexpected_finish_reason",
+    "reasoning_not_disabled",
     "adapter_exception", "invalid_adapter_response", "interrupted", "api_error", "timeout", "empty_response", "truncated", "not_run",
 }
 

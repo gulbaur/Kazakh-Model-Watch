@@ -449,3 +449,125 @@ def test_default_adapter_diagnostic_is_backwards_compatible(model_request):
     from kazakh_model_watch.model_adapter import MockAdapter, ModelResponse
     mock = MockAdapter(ModelResponse(status="ok", raw_response="synthetic", requested_model_id="mock-fixture"))
     assert mock.get_diagnostic() == {}
+
+
+@pytest.mark.parametrize("model_id", [MODEL_ID, "google/gemini-3.1-flash-lite"])
+def test_explicit_non_thinking_payload_for_both_models(metadata, model_request, model_id):
+    metadata.update(id=model_id, supported_parameters=["temperature", "max_tokens", "reasoning"], reasoning={"mandatory": False})
+    request = replace(model_request, model_id=model_id, reasoning={"enabled": False})
+    body = _body("  ҚАЛАҒА\n")
+    body["model"] = model_id
+    adapter, calls = _adapter(metadata, body)
+    response = adapter.generate(request)
+    assert response.status == "ok" and response.raw_response == "  ҚАЛАҒА\n"
+    payload = json.loads(calls[0].content)
+    assert payload == {**OpenRouterAdapter.payload(model_request), "model": model_id, "reasoning": {"enabled": False}}
+    assert all(value == 60 for value in calls[0].extensions["timeout"].values())
+    payload["reasoning"]["enabled"] = True
+    assert request.reasoning == {"enabled": False}
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("failure", ["missing_parameter", "mandatory", "mutated_request"])
+def test_non_thinking_unsupported_setting_never_reaches_transport(metadata, model_request, failure):
+    request = replace(model_request, reasoning={"enabled": False})
+    if failure != "missing_parameter":
+        metadata["supported_parameters"].append("reasoning")
+    if failure == "mandatory":
+        metadata["reasoning"] = {"mandatory": True}
+    elif failure == "mutated_request":
+        request.reasoning["enabled"] = True
+    adapter, calls = _adapter(metadata, _body())
+    assert adapter.generate(request).status == "api_error" and calls == []
+    assert adapter.get_diagnostic()["request_attempted"] is False
+    assert adapter.get_diagnostic()["error_code"] == ("unsupported_mvp_profile" if failure == "mutated_request" else "unsupported_model_parameters")
+
+
+@pytest.mark.parametrize("http_status", [400, 401, 402, 404, 422, 429, 500, 503])
+def test_non_thinking_api_rejection_is_not_retried_or_downgraded(metadata, model_request, http_status, caplog):
+    metadata["supported_parameters"].append("reasoning")
+    adapter, calls = _adapter(metadata, {"error": {"message": "Synthetic backend does not support reasoning"}}, status_code=http_status)
+    response = adapter.generate(replace(model_request, reasoning={"enabled": False}))
+    assert response.status == "api_error" and len(calls) == 1
+    assert adapter.get_diagnostic()["http_status"] == http_status
+    assert adapter.get_diagnostic()["error_code"] == "http_error"
+    assert json.loads(calls[0].content)["reasoning"] == {"enabled": False}
+    assert TEST_KEY not in repr(response) + repr(adapter.get_diagnostic()) + caplog.text
+
+
+@pytest.mark.parametrize("content", [None, "", "5"])
+def test_non_thinking_length_stays_truncated_with_reasoning_usage(metadata, model_request, content):
+    metadata["supported_parameters"].append("reasoning")
+    body = _body(content, "length")
+    body["usage"] = {"completion_tokens": 293, "completion_tokens_details": {"reasoning_tokens": 291}}
+    adapter, calls = _adapter(metadata, body)
+    response = adapter.generate(replace(model_request, reasoning={"enabled": False}))
+    assert response.status == "truncated" and response.finish_reason == "length"
+    assert response.raw_response == content and len(calls) == 1
+    assert response.usage == {"completion_tokens": 293, "completion_tokens_details.reasoning_tokens": 291}
+    assert score_response(response.raw_response, "5", ["5"], status=response.status) == {"correct": 0, "exact_match": 0}
+
+
+@pytest.mark.parametrize("evidence", ["usage", "top_level_usage", "reasoning", "reasoning_content", "reasoning_details"])
+def test_reported_reasoning_cannot_be_silently_accepted_when_disabled(metadata, model_request, evidence):
+    metadata["supported_parameters"].append("reasoning")
+    body = _body()
+    if evidence == "usage":
+        body["usage"] = {"completion_tokens": 293, "completion_tokens_details": {"reasoning_tokens": 291}}
+    elif evidence == "top_level_usage":
+        body["usage"] = {"reasoning_tokens": 1}
+    else:
+        body["choices"][0]["message"][evidence] = [{"text": "synthetic reasoning"}] if evidence == "reasoning_details" else "synthetic reasoning"
+    adapter, calls = _adapter(metadata, body)
+    response = adapter.generate(replace(model_request, reasoning={"enabled": False}))
+    assert response.status == "api_error" and response.raw_response == "5"
+    assert response.finish_reason == "stop" and response.request_id == body["id"] and response.returned_model_id == MODEL_ID
+    assert adapter.get_diagnostic()["error_code"] == "reasoning_not_disabled" and len(calls) == 1
+    assert response.usage == ({"completion_tokens": 293, "completion_tokens_details.reasoning_tokens": 291} if evidence == "usage" else body["usage"])
+    assert score_response(response.raw_response, "5", ["5"], status=response.status)["correct"] == 0
+
+
+@pytest.mark.parametrize("usage", [None, {"completion_tokens": 293},
+                                  {"completion_tokens": 293, "completion_tokens_details": {"reasoning_tokens": 0}}])
+def test_stop_usage_is_preserved_without_guessing_truncation_or_reasoning(metadata, model_request, usage):
+    metadata["supported_parameters"].append("reasoning")
+    body = _body()
+    body["usage"] = usage
+    body["choices"][0]["message"].update(reasoning=None, reasoning_details=[])
+    adapter, calls = _adapter(metadata, body)
+    response = adapter.generate(replace(model_request, reasoning={"enabled": False}))
+    assert response.status == "ok" and response.finish_reason == "stop" and len(calls) == 1
+    expected = {"completion_tokens": 293, "completion_tokens_details.reasoning_tokens": 0} if usage and "completion_tokens_details" in usage else usage
+    assert response.usage == expected
+
+
+def test_non_thinking_missing_key_is_offline(metadata, model_request, monkeypatch):
+    metadata["supported_parameters"].append("reasoning")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    adapter, calls = _adapter(metadata, _body())
+    response = adapter.generate(replace(model_request, reasoning={"enabled": False}))
+    assert response.status == "api_error" and calls == []
+    assert adapter.get_diagnostic()["error_code"] == "missing_api_key"
+
+
+@pytest.mark.parametrize(("finish_reason", "code"), [("content_filter", "content_filtered"), ("tool_calls", "unexpected_finish_reason")])
+def test_non_thinking_reasoning_evidence_preserves_finish_reason_error_priority(metadata, model_request, finish_reason, code):
+    metadata["supported_parameters"].append("reasoning")
+    body = _body("5", finish_reason)
+    body["usage"]["completion_tokens_details"] = {"reasoning_tokens": 1}
+    adapter, _ = _adapter(metadata, body)
+    response = adapter.generate(replace(model_request, reasoning={"enabled": False}))
+    assert response.status == "api_error" and response.finish_reason == finish_reason
+    assert response.raw_response == "5" and response.usage["completion_tokens_details.reasoning_tokens"] == 1
+    assert adapter.get_diagnostic()["error_code"] == code
+
+
+def test_legacy_request_does_not_reclassify_stop_with_reasoning(metadata, model_request):
+    body = _body()
+    body["usage"] = {"completion_tokens": 293, "completion_tokens_details": {"reasoning_tokens": 291}}
+    body["choices"][0]["message"]["reasoning"] = "Synthetic legacy reasoning"
+    adapter, calls = _adapter(metadata, body)
+    response = adapter.generate(model_request)
+    assert response.status == "ok" and response.finish_reason == "stop"
+    assert response.usage == {"completion_tokens": 293, "completion_tokens_details.reasoning_tokens": 291}
+    assert "reasoning" not in json.loads(calls[0].content)

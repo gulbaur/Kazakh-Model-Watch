@@ -6,6 +6,7 @@ from copy import deepcopy
 from datetime import date
 from pathlib import Path
 
+from .model_adapter import validate_reasoning
 from .openrouter_adapter import COMMON_INSTRUCTION
 
 
@@ -53,7 +54,17 @@ def validate_config(value: dict, *, require_ready: bool = False) -> dict:
         raise ConfigValidationError("order_seed: expected 42")
     if value["common_instruction"] != COMMON_INSTRUCTION:
         raise ConfigValidationError("common_instruction: frozen instruction required")
-    _fields(value["profile"], PROFILE, "profile")
+    profile = value["profile"]
+    if not isinstance(profile, dict) or set(profile) not in (set(PROFILE), set(PROFILE) | {"reasoning"}):
+        raise ConfigValidationError("profile: invalid fields")
+    if "reasoning" in profile:
+        try:
+            if profile["reasoning"] is None:
+                raise ValueError
+            validate_reasoning(profile["reasoning"])
+        except (TypeError, ValueError):
+            raise ConfigValidationError("profile.reasoning: only enabled=false is supported") from None
+    required_parameters = {"temperature", "max_tokens"} | ({"reasoning"} if "reasoning" in profile else set())
     for key, expected in PROFILE.items():
         actual = value["profile"][key]
         numeric = key in {"temperature", "timeout_s"}
@@ -111,7 +122,10 @@ def validate_config(value: dict, *, require_ready: bool = False) -> dict:
                 raise ConfigValidationError("metadata: invalid supported_parameters")
             if model["readiness"] == "ready":
                 endpoints = metadata["endpoints"]
-                if not metadata["profile_verified"] or not {"temperature", "max_tokens"} <= set(parameters):
+                reasoning = details.get("reasoning")
+                if "reasoning" in profile and isinstance(reasoning, dict) and reasoning.get("mandatory") is True:
+                    raise ConfigValidationError("metadata: reasoning cannot be disabled")
+                if not metadata["profile_verified"] or not required_parameters <= set(parameters):
                     raise ConfigValidationError("model profile compatibility is not verified")
                 compatible = []
                 if isinstance(endpoints, list):
@@ -120,7 +134,14 @@ def validate_config(value: dict, *, require_ready: bool = False) -> dict:
                             continue
                         supported = endpoint.get("supported_parameters")
                         limit = endpoint.get("max_completion_tokens")
-                        if isinstance(supported, list) and all(isinstance(p, str) for p in supported) and {"temperature", "max_tokens"} <= set(supported) and (limit is None or type(limit) is int and limit >= 128):
+                        reasoning = endpoint.get("reasoning")
+                        mandatory = isinstance(reasoning, dict) and reasoning.get("mandatory") is True
+                        if (
+                            isinstance(supported, list) and all(isinstance(p, str) for p in supported)
+                            and required_parameters <= set(supported)
+                            and not ("reasoning" in profile and mandatory)
+                            and (limit is None or type(limit) is int and limit >= 128)
+                        ):
                             compatible.append(endpoint)
                 if not compatible:
                     raise ConfigValidationError("metadata: no compatible endpoint")

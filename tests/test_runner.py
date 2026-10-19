@@ -273,3 +273,80 @@ def test_adapter_cannot_return_a_not_run_attempt(evaluation_inputs, tmp_path):
                               adapters={"mock_1": InvalidAdapter(), "mock_2": ScriptedAdapter()})
     row = read_json(directory / "responses.json")[0]
     assert row["status"] == "api_error" and row["error"]["error_code"] == "invalid_adapter_response"
+
+
+def test_optional_reasoning_survives_mock_requests_snapshots_manifest_and_report(evaluation_inputs, tmp_path, monkeypatch):
+    dataset, config_path = evaluation_inputs
+    config = load_config(config_path)
+    config["profile"]["reasoning"] = {"enabled": False}
+    config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    calls = []
+    adapters = {m["key"]: ScriptedAdapter(calls=calls) for m in config["models"]}
+    directory = run_benchmark(dataset, config_path, mock=True, adapters=adapters, output_root=tmp_path / "results")
+    assert len(calls) == 12 and all(request.reasoning == {"enabled": False} for request in calls)
+    assert read_json(directory / "manifest.json")["profile"]["reasoning"] == {"enabled": False}
+    assert read_json(directory / "config.json")["profile"]["reasoning"] == {"enabled": False}
+    assert any("not guaranteed" in limitation for limitation in read_json(directory / "manifest.json")["limitations"])
+    before = {p.name: p.read_bytes() for p in directory.iterdir()}
+    report(directory)
+    assert before == {p.name: p.read_bytes() for p in directory.iterdir()}
+
+
+def test_non_thinking_mock_transport_roundtrip_preserves_failures_and_usage(input_factory, tmp_path, monkeypatch):
+    # "live" exercises the gated branch on synthetic verified fixtures only.
+    # Every HTTP call uses MockTransport; pytest-socket blocks actual sockets.
+    dataset, config_path = input_factory(full=True, real=True)
+    config = load_config(config_path)
+    config["profile"]["reasoning"] = {"enabled": False}
+    for model in config["models"]:
+        model["metadata"]["model"]["supported_parameters"].append("reasoning")
+        model["metadata"]["endpoints"][0]["supported_parameters"].append("reasoning")
+    config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+    key = "synthetic-non-thinking-test-credential"
+    monkeypatch.setenv("OPENROUTER_API_KEY", key)
+    calls = []
+    def handler(request):
+        payload = json.loads(request.content)
+        calls.append(payload)
+        assert payload["reasoning"] == {"enabled": False}
+        assert payload["temperature"] == 0 and payload["max_tokens"] == 128 and payload["stream"] is False
+        assert payload["provider"] == {"require_parameters": True, "allow_fallbacks": False}
+        assert all(value == 60 for value in request.extensions["timeout"].values())
+        if len(calls) == 3:
+            return httpx.Response(400, json={"error": {"message": "Synthetic unsupported backend"}})
+        return httpx.Response(200, json={"model": payload["model"], "id": "synthetic-reasoning-id",
+            "choices": [{"finish_reason": "length" if len(calls) == 2 else "stop", "message": {"content": "5"}}],
+            "usage": {"completion_tokens": 293, "completion_tokens_details": {"reasoning_tokens": 291}} if len(calls) <= 2 else None})
+    adapters = {m["key"]: OpenRouterAdapter(m["metadata"]["model"], transport=httpx.MockTransport(handler)) for m in config["models"]}
+    def no_wait(_):
+        pytest.fail("Non-thinking profile or HTTP 400 failure was retried")
+    directory = run_benchmark(dataset, config_path, live=True, adapters=adapters, sleep=no_wait, output_root=tmp_path / "results")
+    rows = read_json(directory / "responses.json")
+    assert len(calls) == 48 and len({payload["model"] for payload in calls}) == 2
+    assert rows[0]["status"] == "api_error" and rows[0]["error"]["error_code"] == "reasoning_not_disabled"
+    assert rows[1]["status"] == "truncated" and rows[1]["finish_reason"] == "length"
+    assert rows[2]["status"] == "api_error" and rows[2]["error"]["http_status"] == 400
+    for row in rows[:2]:
+        assert row["raw_response"] == "5" and row["usage"] == {"completion_tokens": 293, "completion_tokens_details.reasoning_tokens": 291}
+        assert row["exact_match"] == row["correct"] == 0 and len(row["attempts"]) == 1
+    assert all(row["status"] == "ok" and row["usage"] is None for row in rows[3:])
+    assert read_json(directory / "manifest.json")["profile"]["reasoning"] == {"enabled": False}
+    assert key not in "".join(p.read_text(encoding="utf-8") for p in directory.iterdir())
+    before = {p.name: p.read_bytes() for p in directory.iterdir()}
+    monkeypatch.delenv("OPENROUTER_API_KEY")
+    report(directory)
+    assert before == {p.name: p.read_bytes() for p in directory.iterdir()}
+
+
+def test_unsupported_reasoning_preflight_blocks_adapter_construction(input_factory, tmp_path, monkeypatch):
+    dataset, config_path = input_factory(full=True, real=True)
+    config = load_config(config_path)
+    config["profile"]["reasoning"] = {"enabled": False}
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    def forbidden(*args, **kwargs):
+        pytest.fail("Unsupported reasoning constructed an adapter")
+    monkeypatch.setattr("kazakh_model_watch.runner.OpenRouterAdapter", forbidden)
+    with pytest.raises(ConfigValidationError):
+        run_benchmark(dataset, config_path, live=True, output_root=tmp_path / "results")
+    assert not (tmp_path / "results").exists()

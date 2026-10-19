@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 
-from .model_adapter import ModelAdapter, ModelRequest, ModelResponse
+from .model_adapter import ModelAdapter, ModelRequest, ModelResponse, validate_reasoning
 
 
 CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -121,7 +121,11 @@ class OpenRouterAdapter(ModelAdapter):
             return False
         if not isinstance(parameters, list) or not all(isinstance(item, str) for item in parameters):
             return False
-        if not {"temperature", "max_tokens"}.issubset(parameters):
+        required = {"temperature", "max_tokens"} | ({"reasoning"} if request.reasoning is not None else set())
+        if not required.issubset(parameters):
+            return False
+        reasoning = self._model_metadata.get("reasoning")
+        if request.reasoning is not None and isinstance(reasoning, dict) and reasoning.get("mandatory") is True:
             return False
         top_provider = self._model_metadata.get("top_provider", {})
         if not isinstance(top_provider, dict):
@@ -132,7 +136,8 @@ class OpenRouterAdapter(ModelAdapter):
     @staticmethod
     def payload(request: ModelRequest) -> dict[str, Any]:
         """Whitelist request fields; gold data and credentials cannot enter JSON."""
-        return {
+        validate_reasoning(request.reasoning)
+        payload = {
             "model": request.model_id,
             "temperature": request.temperature,
             "max_tokens": request.max_output_tokens,
@@ -140,12 +145,20 @@ class OpenRouterAdapter(ModelAdapter):
             "messages": [{"role": "user", "content": request.prompt}],
             "provider": {"require_parameters": True, "allow_fallbacks": False},
         }
+        if request.reasoning is not None:
+            payload["reasoning"] = dict(request.reasoning)
+        return payload
 
     def generate(self, request: ModelRequest) -> ModelResponse:
         if not isinstance(request, ModelRequest):
             raise TypeError("request must be a ModelRequest")
         self.last_diagnostic = {"error_code": None, "http_status": None, "request_attempted": False}
         self._retry_after_s = None
+        try:
+            # Recheck mutable request data before any credential lookup or HTTP.
+            validate_reasoning(request.reasoning)
+        except (TypeError, ValueError):
+            return self._failure(request, "unsupported_mvp_profile")
         if request.provider != "openrouter":
             return self._failure(request, "invalid_provider")
         if request.temperature != 0 or request.max_output_tokens != 128 or request.timeout_s != 60:
@@ -230,6 +243,14 @@ class OpenRouterAdapter(ModelAdapter):
             elif finish_reason not in {None, "stop"}:
                 status = "api_error"
                 self.last_diagnostic["error_code"] = "unexpected_finish_reason"
+            elif request.reasoning is not None and (
+                any((metadata["usage"] or {}).get(key, 0) > 0 for key in ("reasoning_tokens", "completion_tokens_details.reasoning_tokens"))
+                or any(message.get(key) for key in ("reasoning", "reasoning_content", "reasoning_details"))
+            ):
+                # Observed reasoning contradicts the requested profile. Missing
+                # counters are unknown, never proof that reasoning was disabled.
+                status = "api_error"
+                self.last_diagnostic["error_code"] = "reasoning_not_disabled"
             elif raw_response is None or not raw_response.strip():
                 status = "empty_response"
             else:

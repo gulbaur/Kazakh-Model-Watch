@@ -25,7 +25,7 @@ def _response(**changes):
 def test_request_defaults_follow_mvp_profile_and_preserve_prompt(model_request):
     assert asdict(model_request) == {
         "provider": "mock", "model_id": "mock-model", "prompt": "Тек жауапты жазыңыз.",
-        "temperature": 0.0, "max_output_tokens": 128, "timeout_s": 60.0,
+        "temperature": 0.0, "max_output_tokens": 128, "timeout_s": 60.0, "reasoning": None,
     }
     assert replace(model_request, prompt="  ҮИ\u0306\n").prompt == "  ҮИ\u0306\n"
 
@@ -208,3 +208,20 @@ def test_zero_usage_and_zero_success_latency_are_measured_values():
     response = _response(usage={"output_tokens": 0}, latency_ms=0)
     assert response.usage == {"output_tokens": 0}
     assert response.latency_ms == 0
+
+
+@pytest.mark.parametrize("reasoning", [False, [], "false", {}, {"enabled": True}, {"enabled": 0},
+                                      {"enabled": None}, {"exclude": True}, {"effort": "none"},
+                                      {"enabled": False, "max_tokens": 0}])
+def test_request_rejects_unsupported_reasoning(model_request, reasoning):
+    with pytest.raises((TypeError, ValueError), match="reasoning"):
+        replace(model_request, reasoning=reasoning)
+
+
+def test_reasoning_is_optional_copied_and_compatible_with_mock(model_request):
+    setting = {"enabled": False}
+    request = replace(model_request, reasoning=setting)
+    setting["enabled"] = True
+    assert request.reasoning == {"enabled": False}
+    assert asdict(request)["reasoning"] == {"enabled": False}
+    assert MockAdapter(_response()).generate(request).status == "ok"
