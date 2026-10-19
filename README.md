@@ -2,7 +2,7 @@
 
 Небольшой benchmark AI-моделей на казахском языке с вручную проверенными заданиями и сохранёнными ответами. Приоритет MVP — минимальный работающий pipeline и реальные измерения.
 
-**Статус:** Dataset Loader, Scoring Engine, Model Adapter Foundation, OpenRouter Integration и offline foundation Evaluation Runner. Есть CLI `validate` / `run` / `report`, локальные артефакты и synthetic mock-режим. Все пять заданий остаются черновиками; две реальные модели в конфигурации имеют статус `not_ready`. 2026-10-15 выполнен один подтверждённый smoke-вызов `qwen/qwen3.5-9b`, получен ответ `5`. Offline workflow GitHub Actions реализован; базовая интеграция проверена CI на Python 3.11 и 3.13. Новых live-вызовов и полного реального сравнения на этапе runner не было.
+**Статус:** Dataset Loader, Scoring Engine, Model Adapter Foundation, OpenRouter Integration и offline foundation Evaluation Runner. Есть CLI `validate` / `run` / `report`, локальные артефакты и synthetic mock-режим. Все 24 задания остаются черновиками; две реальные модели в конфигурации имеют статус `not_ready`. 2026-10-15 выполнен один подтверждённый smoke-вызов `qwen/qwen3.5-9b`, получен ответ `5`. Offline workflow GitHub Actions реализован; базовая интеграция проверена CI на Python 3.11 и 3.13. Новых live-вызовов и полного реального сравнения на этапе runner не было.
 
 Основная техническая спецификация — [docs/MVP_SPEC.md](docs/MVP_SPEC.md). Реализация и критерии готовности определяются этим документом.
 
@@ -40,7 +40,7 @@ kazakh-model-watch/
 │   └── mock_models.json      # два явно синтетических offline mock
 ├── data/
 │   ├── benchmark.json       # пустая исходная заготовка; не используется loader
-│   └── benchmark.jsonl      # пять черновых заданий, review.status=draft
+│   └── benchmark.jsonl      # 24 отобранных кандидата, review.status=draft
 ├── docs/
 │   └── MVP_SPEC.md          # основная техническая спецификация
 ├── src/
@@ -115,7 +115,7 @@ Offline-проверка чернового датасета и конфигур
 .\.venv\Scripts\python.exe -m kazakh_model_watch validate --development
 ```
 
-Без `--development` команда `validate` проверяет финальные 24 verified задания (по 8 на категорию) и готовность обеих моделей. Текущие пять draft эту проверку не проходят. Валидация структуры не устанавливает факт человеческой проверки.
+Без `--development` команда `validate` проверяет финальные 24 verified задания (по 8 на категорию) и готовность обеих моделей. Текущие 24 draft эту проверку не проходят. Валидация структуры не устанавливает факт человеческой проверки.
 
 Локальная разработка на двух mock-моделях:
 
@@ -145,7 +145,7 @@ from kazakh_model_watch.dataset import load_dataset
 drafts = load_dataset("data/benchmark.jsonl")
 
 # Финальная проверка: 24 verified-задания, по 8 на категорию.
-# Для текущих пяти черновиков этот вызов ожидаемо завершится ошибкой.
+# Для текущих 24 черновиков этот вызов ожидаемо завершится ошибкой.
 final_dataset = load_dataset("data/benchmark.jsonl", final=True)
 ```
 
