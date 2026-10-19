@@ -26,6 +26,16 @@ def _number(value: object, field: str, *, positive: bool = False) -> None:
         raise ValueError(f"{field} must be finite and {limit}")
 
 
+def validate_reasoning(value: object) -> None:
+    """Only an omitted setting or explicit disabling is supported in issue #9."""
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        raise TypeError("reasoning must be a dictionary or None")
+    if set(value) != {"enabled"} or value["enabled"] is not False:
+        raise ValueError("reasoning supports only enabled=false")
+
+
 @dataclass(frozen=True)
 class ModelRequest:
     """One complete prompt; defaults follow the MVP generation profile."""
@@ -36,6 +46,7 @@ class ModelRequest:
     temperature: float = 0.0
     max_output_tokens: int = 128
     timeout_s: float = 60.0
+    reasoning: dict[str, bool] | None = None
 
     def __post_init__(self) -> None:
         for field in ("provider", "model_id", "prompt"):
@@ -46,6 +57,8 @@ class ModelRequest:
             raise TypeError("max_output_tokens must be an integer")
         if self.max_output_tokens <= 0:
             raise ValueError("max_output_tokens must be positive")
+        validate_reasoning(self.reasoning)
+        object.__setattr__(self, "reasoning", deepcopy(self.reasoning))
 
 
 @dataclass(frozen=True)

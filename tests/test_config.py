@@ -11,6 +11,7 @@ from kazakh_model_watch.config import ConfigValidationError, load_config, valida
 
 def test_repository_real_config_has_two_distinct_not_ready_models():
     config = load_config(ROOT / "config/models.json")
+    assert config["profile"]["reasoning"] == {"enabled": False}
     assert [m["model_id"] for m in config["models"]] == ["qwen/qwen3.5-9b", "google/gemini-3.1-flash-lite"]
     assert all(m["readiness"] == "not_ready" and m["readiness_reason"] for m in config["models"])
     assert all(m["api_key_env"] == "OPENROUTER_API_KEY" and not m["metadata"]["profile_verified"] for m in config["models"])
@@ -107,3 +108,48 @@ def test_validation_returns_copy(evaluation_inputs):
     copy = validate_config(config)
     copy["models"][0]["model_id"] = "mock-changed"
     assert config == original
+
+
+@pytest.mark.parametrize("reasoning", [None, False, [], "false", {}, {"enabled": True}, {"enabled": 0},
+                                      {"enabled": "false"}, {"exclude": True}, {"effort": "none"},
+                                      {"enabled": False, "exclude": True}])
+def test_profile_rejects_invalid_reasoning(evaluation_inputs, reasoning):
+    config = load_config(evaluation_inputs[1])
+    config["profile"]["reasoning"] = reasoning
+    with pytest.raises(ConfigValidationError, match="profile.reasoning"):
+        validate_config(config)
+
+
+def test_legacy_and_mock_config_keep_reasoning_optional(evaluation_inputs):
+    config = load_config(evaluation_inputs[1], require_ready=True)
+    assert "reasoning" not in config["profile"]
+    config["profile"]["reasoning"] = {"enabled": False}
+    copy = validate_config(config, require_ready=True)
+    copy["profile"]["reasoning"]["enabled"] = True
+    assert config["profile"]["reasoning"] == {"enabled": False}
+
+
+@pytest.mark.parametrize("failure", [None, "model_parameter", "endpoint_parameter", "mandatory_model", "mandatory_endpoint"])
+def test_non_thinking_requires_compatible_model_and_endpoint(input_factory, failure):
+    _, path = input_factory(real=True, full=True)
+    config = load_config(path)
+    config["profile"]["reasoning"] = {"enabled": False}
+    for model in config["models"]:
+        meta = model["metadata"]
+        meta["model"]["supported_parameters"].append("reasoning")
+        meta["model"]["reasoning"] = {"mandatory": False}
+        meta["endpoints"][0]["supported_parameters"].append("reasoning")
+    meta = config["models"][0]["metadata"]
+    if failure == "model_parameter":
+        meta["model"]["supported_parameters"].remove("reasoning")
+    elif failure == "endpoint_parameter":
+        meta["endpoints"][0]["supported_parameters"].remove("reasoning")
+    elif failure == "mandatory_model":
+        meta["model"]["reasoning"]["mandatory"] = True
+    elif failure == "mandatory_endpoint":
+        meta["endpoints"][0]["reasoning"] = {"mandatory": True}
+    if failure is None:
+        assert validate_config(config, require_ready=True)["profile"]["reasoning"] == {"enabled": False}
+    else:
+        with pytest.raises(ConfigValidationError):
+            validate_config(config, require_ready=True)

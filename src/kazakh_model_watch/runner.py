@@ -119,7 +119,10 @@ def run_benchmark(
         "python_version": platform.python_version(), "unicode_version": unicodedata.unidata_version,
         "dependencies": _dependency_versions(),
         "os": platform.platform(), "runner": "sequential-python", **_git_state(),
-        "limitations": ["Mutable aliases may change; returned IDs are recorded.", "Provider caching and unspecified API defaults, including reasoning, are not overridden.", "HTTPX timeout is per network phase; latency includes network.", "Mock outputs and timings are not real model measurements." if mock else "Profile compatibility must be approved before this run."],
+        "limitations": ["Mutable aliases may change; returned IDs are recorded.", "Provider caching and unspecified API defaults are not overridden.",
+                        "Reasoning disable is requested, not guaranteed by upstream; this profile is an issue #9 proposal, not an approved mvp-v1 benchmark profile."
+                        if "reasoning" in config["profile"] else "Reasoning defaults are not overridden.",
+                        "HTTPX timeout is per network phase; latency includes network.", "Mock outputs and timings are not real model measurements." if mock else "Profile compatibility must be approved before this run."],
     }
     write_json(directory / "manifest.json", manifest)
     atomic_write(directory / "dataset.jsonl", dataset_bytes)
@@ -130,7 +133,8 @@ def run_benchmark(
         for row, (item, model) in zip(rows, plan):
             adapter = adapters[model["key"]]
             request = ModelRequest(provider=model["provider"], model_id=model["model_id"], prompt=row["prompt"],
-                                   **{key: config["profile"][key] for key in ("temperature", "max_output_tokens", "timeout_s")})
+                                   **{key: config["profile"][key] for key in ("temperature", "max_output_tokens", "timeout_s")},
+                                   reasoning=config["profile"].get("reasoning"))
             pair_started = clock() if live else None
             for number in (1, 2):
                 started = clock() if live else None

@@ -10,7 +10,8 @@
     "max_output_tokens": 128,
     "timeout_s": 60,
     "stream": false,
-    "message_role": "user"
+    "message_role": "user",
+    "reasoning": {"enabled": false}
   },
   "models": [
     {
@@ -19,7 +20,7 @@
       "model_id": "qwen/qwen3.5-9b",
       "api_key_env": "OPENROUTER_API_KEY",
       "readiness": "not_ready",
-      "readiness_reason": "not_ready: unresolved token-limit semantics from the previous smoke; no new profile approval.",
+      "readiness_reason": "not_ready: issue #9 proposes reasoning.enabled=false, not yet live-verified or approved for a benchmark; previous token-limit semantics remain unresolved.",
       "metadata": {
         "checked_on": "2026-10-19",
         "source_url": "https://openrouter.ai/api/v1/models",
@@ -229,7 +230,7 @@
       "model_id": "google/gemini-3.1-flash-lite",
       "api_key_env": "OPENROUTER_API_KEY",
       "readiness": "not_ready",
-      "readiness_reason": "not_ready: advertised parameters verified, but default reasoning is enabled; visible-only output-budget compatibility is not established. No live verification performed.",
+      "readiness_reason": "not_ready: issue #9 proposes reasoning.enabled=false; upstream disabling and visible-only output-budget compatibility are not established. No live verification or benchmark profile approval.",
       "metadata": {
         "checked_on": "2026-10-19",
         "source_url": "https://openrouter.ai/api/v1/models",
