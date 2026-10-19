@@ -15,7 +15,7 @@ def test_development_validate_is_offline_without_key(monkeypatch, capsys):
     monkeypatch.setattr("kazakh_model_watch.runner.OpenRouterAdapter", forbidden)
     assert main(["validate", "--development", "--dataset", str(ROOT / "data/benchmark.jsonl"), "--config", str(ROOT / "config/models.json")]) == 0
     result = json.loads(capsys.readouterr().out)
-    assert result["dataset_items"] == 5 and not result["final"]
+    assert result["dataset_items"] == 24 and not result["final"]
     assert all(m["readiness"] == "not_ready" for m in result["model_readiness"])
 
 
