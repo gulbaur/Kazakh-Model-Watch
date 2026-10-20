@@ -275,9 +275,11 @@ def test_adapter_cannot_return_a_not_run_attempt(evaluation_inputs, tmp_path):
     assert row["status"] == "api_error" and row["error"]["error_code"] == "invalid_adapter_response"
 
 
-def test_optional_reasoning_survives_mock_requests_snapshots_manifest_and_report(evaluation_inputs, tmp_path, monkeypatch):
+@pytest.mark.parametrize("protocol", ["mvp-v1", "mvp-v2-non-thinking"])
+def test_reasoning_protocol_survives_mock_requests_snapshots_manifest_and_report(evaluation_inputs, tmp_path, monkeypatch, protocol):
     dataset, config_path = evaluation_inputs
     config = load_config(config_path)
+    config["protocol_version"] = protocol
     config["profile"]["reasoning"] = {"enabled": False}
     config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -285,10 +287,15 @@ def test_optional_reasoning_survives_mock_requests_snapshots_manifest_and_report
     adapters = {m["key"]: ScriptedAdapter(calls=calls) for m in config["models"]}
     directory = run_benchmark(dataset, config_path, mock=True, adapters=adapters, output_root=tmp_path / "results")
     assert len(calls) == 12 and all(request.reasoning == {"enabled": False} for request in calls)
-    assert read_json(directory / "manifest.json")["profile"]["reasoning"] == {"enabled": False}
+    manifest = read_json(directory / "manifest.json")
+    assert manifest["protocol_version"] == protocol
+    assert manifest["profile"]["reasoning"] == {"enabled": False}
     assert read_json(directory / "config.json")["profile"]["reasoning"] == {"enabled": False}
-    assert any("not guaranteed" in limitation for limitation in read_json(directory / "manifest.json")["limitations"])
+    assert any("not guaranteed" in limitation for limitation in manifest["limitations"])
+    assert any("issue #9 proposal" in limitation for limitation in manifest["limitations"]) == (protocol == "mvp-v1")
+    assert protocol in (directory / "leaderboard.md").read_text(encoding="utf-8")
     before = {p.name: p.read_bytes() for p in directory.iterdir()}
+    monkeypatch.setattr(OpenRouterAdapter, "generate", lambda *_: pytest.fail("Offline report called a provider"))
     report(directory)
     assert before == {p.name: p.read_bytes() for p in directory.iterdir()}
 
@@ -298,6 +305,7 @@ def test_non_thinking_mock_transport_roundtrip_preserves_failures_and_usage(inpu
     # Every HTTP call uses MockTransport; pytest-socket blocks actual sockets.
     dataset, config_path = input_factory(full=True, real=True)
     config = load_config(config_path)
+    config["protocol_version"] = "mvp-v2-non-thinking"
     config["profile"]["reasoning"] = {"enabled": False}
     for model in config["models"]:
         model["metadata"]["model"]["supported_parameters"].append("reasoning")
@@ -331,7 +339,10 @@ def test_non_thinking_mock_transport_roundtrip_preserves_failures_and_usage(inpu
         assert row["raw_response"] == "5" and row["usage"] == {"completion_tokens": 293, "completion_tokens_details.reasoning_tokens": 291}
         assert row["exact_match"] == row["correct"] == 0 and len(row["attempts"]) == 1
     assert all(row["status"] == "ok" and row["usage"] is None for row in rows[3:])
-    assert read_json(directory / "manifest.json")["profile"]["reasoning"] == {"enabled": False}
+    manifest = read_json(directory / "manifest.json")
+    assert manifest["protocol_version"] == "mvp-v2-non-thinking"
+    assert manifest["profile"]["reasoning"] == {"enabled": False}
+    assert "mvp-v2-non-thinking" in (directory / "leaderboard.md").read_text(encoding="utf-8")
     assert key not in "".join(p.read_text(encoding="utf-8") for p in directory.iterdir())
     before = {p.name: p.read_bytes() for p in directory.iterdir()}
     monkeypatch.delenv("OPENROUTER_API_KEY")
@@ -342,11 +353,32 @@ def test_non_thinking_mock_transport_roundtrip_preserves_failures_and_usage(inpu
 def test_unsupported_reasoning_preflight_blocks_adapter_construction(input_factory, tmp_path, monkeypatch):
     dataset, config_path = input_factory(full=True, real=True)
     config = load_config(config_path)
+    config["protocol_version"] = "mvp-v2-non-thinking"
     config["profile"]["reasoning"] = {"enabled": False}
     config_path.write_text(json.dumps(config), encoding="utf-8")
     def forbidden(*args, **kwargs):
         pytest.fail("Unsupported reasoning constructed an adapter")
     monkeypatch.setattr("kazakh_model_watch.runner.OpenRouterAdapter", forbidden)
+    with pytest.raises(ConfigValidationError):
+        run_benchmark(dataset, config_path, live=True, output_root=tmp_path / "results")
+    assert not (tmp_path / "results").exists()
+
+
+@pytest.mark.parametrize("mutation", ["legacy_reasoning", "missing_reasoning", "unknown_version"])
+def test_protocol_preflight_precedes_credentials_adapters_and_output(input_factory, tmp_path, monkeypatch, mutation):
+    dataset, config_path = input_factory(full=True, real=True)
+    config = load_config(config_path)
+    if mutation == "legacy_reasoning":
+        config["profile"]["reasoning"] = {"enabled": False}
+    else:
+        config["protocol_version"] = "mvp-v2-non-thinking" if mutation == "missing_reasoning" else "mvp-v3"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    def forbidden(*args, **kwargs):
+        pytest.fail("Invalid protocol touched credentials or constructed an adapter")
+    monkeypatch.setattr("kazakh_model_watch.runner.OpenRouterAdapter", forbidden)
+    from kazakh_model_watch import runner
+    original_get = runner.os.environ.get
+    monkeypatch.setattr(runner.os.environ, "get", lambda key, default=None: forbidden() if key == "OPENROUTER_API_KEY" else original_get(key, default))
     with pytest.raises(ConfigValidationError):
         run_benchmark(dataset, config_path, live=True, output_root=tmp_path / "results")
     assert not (tmp_path / "results").exists()

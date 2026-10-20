@@ -2,11 +2,11 @@
 
 Основа: main после PR #10, Issue #9 и [предложение профиля](ISSUE9_NON_THINKING_PROFILE.md). Подготовлен CLI `python -m kazakh_model_watch.non_thinking_smoke`. Реальные запросы в рамках этой работы не выполнялись; данный документ не разрешает расходы.
 
-## Предлагаемая версия
+## Утверждённая версия протокола
 
-Для будущего benchmark предлагается отдельная версия **`mvp-v2-non-thinking`**: тот же набор категорий, scoring, prompt и temperature=0 / max_output_tokens=128 / timeout_s=60 / stream=false, плюс одинаковое явное reasoning.enabled=false для обеих моделей. Имя и редакция протокола требуют согласования владельца; сейчас они не применены к спецификации или config.protocol_version.
+20 октября 2026 владелец утвердил **`mvp-v2-non-thinking`**: тот же набор категорий, scoring, prompt и temperature=0 / max_output_tokens=128 / timeout_s=60 / stream=false, плюс одинаковое обязательное reasoning.enabled=false для обеих моделей. Версия применяется в [MVP_SPEC.md](MVP_SPEC.md) и config/models.json. Значение 128 означает запрошенный API-параметр max_tokens; внутреннее reasoning и фактический видимый бюджет не гарантируются.
 
-Причина новой версии: mvp-v1 запрещает дополнительный reasoning-режим и определяет лимит именно видимого ответа. Добавление enabled=false меняет общий профиль, но не доказывает, как upstream трактует лимит. Данные разных профилей нельзя объединять в одну таблицу результатов. `MVP_SPEC.md`, dataset, readiness и profile_verified не изменяются этим CLI.
+Причина новой версии: mvp-v1 запрещал дополнительный reasoning-режим и определял лимит именно видимого ответа. Добавление enabled=false меняет общий профиль, но не доказывает, как upstream трактует лимит. Данные разных версий нельзя объединять в одну таблицу результатов. CLI не меняет dataset, readiness или profile_verified; утверждение версии не разрешает расходы или live.
 
 Smoke — отдельная диагностика одного фиксированного задания, не новый benchmark и не human verification. В JSON указан purpose=limited_profile_smoke, сохранены точный общий профиль и SHA256 публичного конфига. Даже полный успешный smoke не переводит модели в ready и не присваивает версию будущему benchmark.
 

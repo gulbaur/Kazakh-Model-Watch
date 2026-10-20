@@ -11,6 +11,7 @@ from kazakh_model_watch.config import ConfigValidationError, load_config, valida
 
 def test_repository_real_config_has_two_distinct_not_ready_models():
     config = load_config(ROOT / "config/models.json")
+    assert config["protocol_version"] == "mvp-v2-non-thinking"
     assert config["profile"]["reasoning"] == {"enabled": False}
     assert [m["model_id"] for m in config["models"]] == ["qwen/qwen3.5-9b", "google/gemini-3.1-flash-lite"]
     assert all(m["readiness"] == "not_ready" and m["readiness_reason"] for m in config["models"])
@@ -110,11 +111,13 @@ def test_validation_returns_copy(evaluation_inputs):
     assert config == original
 
 
+@pytest.mark.parametrize("protocol", ["mvp-v1", "mvp-v2-non-thinking"])
 @pytest.mark.parametrize("reasoning", [None, False, [], "false", {}, {"enabled": True}, {"enabled": 0},
                                       {"enabled": "false"}, {"exclude": True}, {"effort": "none"},
                                       {"enabled": False, "exclude": True}])
-def test_profile_rejects_invalid_reasoning(evaluation_inputs, reasoning):
+def test_profile_rejects_invalid_reasoning(evaluation_inputs, reasoning, protocol):
     config = load_config(evaluation_inputs[1])
+    config["protocol_version"] = protocol
     config["profile"]["reasoning"] = reasoning
     with pytest.raises(ConfigValidationError, match="profile.reasoning"):
         validate_config(config)
@@ -133,6 +136,7 @@ def test_legacy_and_mock_config_keep_reasoning_optional(evaluation_inputs):
 def test_non_thinking_requires_compatible_model_and_endpoint(input_factory, failure):
     _, path = input_factory(real=True, full=True)
     config = load_config(path)
+    config["protocol_version"] = "mvp-v2-non-thinking"
     config["profile"]["reasoning"] = {"enabled": False}
     for model in config["models"]:
         meta = model["metadata"]
@@ -153,3 +157,33 @@ def test_non_thinking_requires_compatible_model_and_endpoint(input_factory, fail
     else:
         with pytest.raises(ConfigValidationError):
             validate_config(config, require_ready=True)
+
+
+@pytest.mark.parametrize("protocol", ["mvp-v3", "", None, [], {}])
+def test_unknown_protocol_is_rejected(evaluation_inputs, protocol):
+    config = load_config(evaluation_inputs[1])
+    config["protocol_version"] = protocol
+    with pytest.raises(ConfigValidationError, match="protocol_version"):
+        validate_config(config)
+
+
+def test_v2_requires_explicit_disabled_reasoning(evaluation_inputs):
+    config = load_config(evaluation_inputs[1])
+    config["protocol_version"] = "mvp-v2-non-thinking"
+    with pytest.raises(ConfigValidationError, match="profile.reasoning"):
+        validate_config(config)
+    config["profile"]["reasoning"] = {"enabled": False}
+    assert validate_config(config, require_ready=True)["protocol_version"] == "mvp-v2-non-thinking"
+
+
+def test_legacy_real_reasoning_config_is_offline_readable_but_cannot_start_a_run(input_factory):
+    _, path = input_factory(real=True, full=True)
+    config = load_config(path)
+    config["profile"]["reasoning"] = {"enabled": False}
+    for model in config["models"]:
+        model["metadata"]["model"]["supported_parameters"].append("reasoning")
+        model["metadata"]["endpoints"][0]["supported_parameters"].append("reasoning")
+    path.write_text(json.dumps(config), encoding="utf-8")
+    assert load_config(path)["protocol_version"] == "mvp-v1"
+    with pytest.raises(ConfigValidationError, match="protocol_version"):
+        load_config(path, require_ready=True)

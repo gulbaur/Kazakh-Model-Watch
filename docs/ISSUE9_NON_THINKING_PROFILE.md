@@ -2,6 +2,8 @@
 
 Дата проверки документации: 2026-10-19. Статус: offline implementation, без live-подтверждения.
 
+**Актуализация 2026-10-20:** владелец утвердил `mvp-v2-non-thinking` с обязательным enabled=false и определением 128 как запрошенного API-лимита. Текущие правила — в [MVP_SPEC.md](MVP_SPEC.md), версия — в config/models.json. Модели остаются not_ready/profile_verified=false; live не разрешён. Ниже сохранена история предложения PR #10, включая прежнее расхождение с mvp-v1; она не заменяет текущую спецификацию.
+
 ## Что подтверждено источниками
 
 OpenRouter использует единый объект `reasoning`; запрос отключения — `{"reasoning":{"enabled":false}}`. `reasoning.exclude=true` только скрывает reasoning из ответа, не отключая его генерацию или оплату. Возможности различаются между моделями и провайдерами; metadata `reasoning.mandatory=true` означают, что отключение недопустимо. На большинстве провайдеров `max_tokens` охватывает reasoning и видимый ответ вместе. Источник: [Reasoning Tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens).
