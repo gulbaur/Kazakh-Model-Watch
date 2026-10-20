@@ -11,7 +11,8 @@ from .openrouter_adapter import COMMON_INSTRUCTION
 
 
 PROFILE = {"temperature": 0, "max_output_tokens": 128, "timeout_s": 60, "stream": False, "message_role": "user"}
-VERSIONS = {"protocol_version": "mvp-v1", "scoring_version": "binary-v1", "normalization_version": "kk-short-v1"}
+PROTOCOL_VERSIONS = ("mvp-v1", "mvp-v2-non-thinking")
+VERSIONS = {"scoring_version": "binary-v1", "normalization_version": "kk-short-v1"}
 
 
 class ConfigValidationError(ValueError):
@@ -45,7 +46,9 @@ def _text(value, label):
 
 def validate_config(value: dict, *, require_ready: bool = False) -> dict:
     """Validate one frozen profile and two distinct identities, without network."""
-    _fields(value, [*VERSIONS, "dataset_version", "order_seed", "common_instruction", "profile", "models"], "config")
+    _fields(value, ["protocol_version", *VERSIONS, "dataset_version", "order_seed", "common_instruction", "profile", "models"], "config")
+    if value["protocol_version"] not in PROTOCOL_VERSIONS:
+        raise ConfigValidationError("protocol_version: unsupported version")
     for key, expected in VERSIONS.items():
         if value[key] != expected:
             raise ConfigValidationError(f"{key}: unsupported version")
@@ -64,6 +67,8 @@ def validate_config(value: dict, *, require_ready: bool = False) -> dict:
             validate_reasoning(profile["reasoning"])
         except (TypeError, ValueError):
             raise ConfigValidationError("profile.reasoning: only enabled=false is supported") from None
+    if value["protocol_version"] == "mvp-v2-non-thinking" and "reasoning" not in profile:
+        raise ConfigValidationError("profile.reasoning: mvp-v2-non-thinking requires enabled=false")
     required_parameters = {"temperature", "max_tokens"} | ({"reasoning"} if "reasoning" in profile else set())
     for key, expected in PROFILE.items():
         actual = value["profile"][key]
@@ -100,6 +105,10 @@ def validate_config(value: dict, *, require_ready: bool = False) -> dict:
             if model["api_key_env"] is not None or model["metadata"] is not None or not model["model_id"].startswith("mock-"):
                 raise ConfigValidationError("mock model must use a synthetic ID and no credentials/metadata")
         elif model["provider"] == "openrouter":
+            # Old issue #9 snapshots remain readable for offline report only;
+            # the runner's readiness preflight rejects new mislabeled live runs.
+            if require_ready and value["protocol_version"] == "mvp-v1" and "reasoning" in profile:
+                raise ConfigValidationError("protocol_version: reasoning requires mvp-v2-non-thinking for a live benchmark")
             if model["api_key_env"] != "OPENROUTER_API_KEY":
                 raise ConfigValidationError("model.api_key_env: expected environment variable name")
             metadata = model["metadata"]

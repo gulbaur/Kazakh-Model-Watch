@@ -120,6 +120,8 @@ def run_benchmark(
         "dependencies": _dependency_versions(),
         "os": platform.platform(), "runner": "sequential-python", **_git_state(),
         "limitations": ["Mutable aliases may change; returned IDs are recorded.", "Provider caching and unspecified API defaults are not overridden.",
+                        "Reasoning disable is requested, not guaranteed by upstream; max_tokens=128 is a requested API limit, not a verified visible-token or billing cap."
+                        if config["protocol_version"] == "mvp-v2-non-thinking" else
                         "Reasoning disable is requested, not guaranteed by upstream; this profile is an issue #9 proposal, not an approved mvp-v1 benchmark profile."
                         if "reasoning" in config["profile"] else "Reasoning defaults are not overridden.",
                         "HTTPX timeout is per network phase; latency includes network.", "Mock outputs and timings are not real model measurements." if mock else "Profile compatibility must be approved before this run."],

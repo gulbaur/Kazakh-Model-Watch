@@ -1,5 +1,5 @@
 {
-  "protocol_version": "mvp-v1",
+  "protocol_version": "mvp-v2-non-thinking",
   "scoring_version": "binary-v1",
   "normalization_version": "kk-short-v1",
   "dataset_version": "kk-mvp-v1",
@@ -20,7 +20,7 @@
       "model_id": "qwen/qwen3.5-9b",
       "api_key_env": "OPENROUTER_API_KEY",
       "readiness": "not_ready",
-      "readiness_reason": "not_ready: issue #9 proposes reasoning.enabled=false, not yet live-verified or approved for a benchmark; previous token-limit semantics remain unresolved.",
+      "readiness_reason": "not_ready: mvp-v2-non-thinking is approved, but reasoning.enabled=false has no live verification; the previous token-usage anomaly still needs review.",
       "metadata": {
         "checked_on": "2026-10-19",
         "source_url": "https://openrouter.ai/api/v1/models",
@@ -230,7 +230,7 @@
       "model_id": "google/gemini-3.1-flash-lite",
       "api_key_env": "OPENROUTER_API_KEY",
       "readiness": "not_ready",
-      "readiness_reason": "not_ready: issue #9 proposes reasoning.enabled=false; upstream disabling and visible-only output-budget compatibility are not established. No live verification or benchmark profile approval.",
+      "readiness_reason": "not_ready: mvp-v2-non-thinking is approved, but reasoning.enabled=false has no live verification; upstream behavior and model readiness still need review.",
       "metadata": {
         "checked_on": "2026-10-19",
         "source_url": "https://openrouter.ai/api/v1/models",
