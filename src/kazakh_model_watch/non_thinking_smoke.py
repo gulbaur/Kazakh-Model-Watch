@@ -90,7 +90,8 @@ def _checks(response: ModelResponse, diagnostic: dict) -> list[str]:
 
 def _empty_result(model_id: str) -> dict:
     return {**asdict(ModelResponse(status="not_run", raw_response=None, requested_model_id=model_id)),
-            "elapsed_ms": None, "http_status": None, "error_code": None, "request_attempted": False, "checks": []}
+            "elapsed_ms": None, "http_status": None, "error_code": None, "request_attempted": False,
+            "reasoning_evidence": None, "checks": []}
 
 
 def _live(config: dict, content: bytes, plan: list, budget: str, run_id: str) -> dict:
@@ -114,15 +115,17 @@ def _live(config: dict, content: bytes, plan: list, budget: str, run_id: str) ->
         # resume this run or misrepresent a potentially billable call as not_run.
         pending = {**asdict(ModelResponse(status="api_error", raw_response=None, requested_model_id=request.model_id)),
                    "elapsed_ms": None, "http_status": None, "error_code": "unfinished_attempt",
-                   "request_attempted": None, "checks": ["unfinished_attempt"]}
+                   "request_attempted": None, "reasoning_evidence": None, "checks": ["unfinished_attempt"]}
         result["responses"][index] = pending
         write_json(output, result)
         started = time.perf_counter()
         interrupted = False
+        reasoning_evidence = None
         try:
             response = adapter.generate(request)  # Exactly one invocation, never retried.
             ended = time.perf_counter()
             diagnostic = safe_diagnostic(adapter.get_diagnostic())
+            reasoning_evidence = adapter.get_reasoning_evidence()
         except (KeyboardInterrupt, SystemExit):
             ended = time.perf_counter()
             interrupted = True
@@ -132,14 +135,16 @@ def _live(config: dict, content: bytes, plan: list, budget: str, run_id: str) ->
             ended = time.perf_counter()
             response = ModelResponse(status="api_error", raw_response=None, requested_model_id=request.model_id)
             diagnostic = safe_diagnostic({"error_code": "adapter_exception"})
-        if not isinstance(response, ModelResponse) or response.requested_model_id != request.model_id or _contains_secret(asdict(response), key):
+        if not isinstance(response, ModelResponse) or response.requested_model_id != request.model_id or _contains_secret([asdict(response), reasoning_evidence], key):
             response = ModelResponse(status="api_error", raw_response=None, requested_model_id=request.model_id)
             diagnostic = safe_diagnostic({"error_code": "sensitive_response"})
+            reasoning_evidence = None
         elapsed = (ended - started) * 1000 if diagnostic["request_attempted"] is True else None
         response = replace(response, latency_ms=elapsed if response.status == "ok" else None)
         checks = _checks(response, diagnostic)
         result["responses"][index] = {**asdict(response), "elapsed_ms": elapsed,
-                                      **{key: diagnostic[key] for key in ("http_status", "error_code", "request_attempted")}, "checks": checks}
+                                      **{key: diagnostic[key] for key in ("http_status", "error_code", "request_attempted")},
+                                      "reasoning_evidence": reasoning_evidence, "checks": checks}
         if checks:
             result.update(run_status="interrupted" if interrupted else "stopped", stop_reason=checks[0])
         elif index == len(plan) - 1:

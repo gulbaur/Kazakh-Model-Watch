@@ -571,3 +571,68 @@ def test_legacy_request_does_not_reclassify_stop_with_reasoning(metadata, model_
     assert response.status == "ok" and response.finish_reason == "stop"
     assert response.usage == {"completion_tokens": 293, "completion_tokens_details.reasoning_tokens": 291}
     assert "reasoning" not in json.loads(calls[0].content)
+
+
+@pytest.mark.parametrize(("fields", "detail_types", "has_text", "has_data"), [
+    ({}, [], False, False),
+    ({"reasoning": "synthetic private thought"}, [], False, False),
+    ({"reasoning_content": "synthetic private thought"}, [], False, False),
+    ({"reasoning_details": [{"type": "reasoning.text", "text": "synthetic private thought"}]}, ["reasoning.text"], True, False),
+    ({"reasoning_details": [{"type": "reasoning.summary", "summary": "synthetic private thought"}]}, ["reasoning.summary"], True, False),
+    ({"reasoning_details": [{"type": "reasoning.encrypted", "data": "synthetic opaque signature"}]}, ["reasoning.encrypted"], False, True),
+    ({"reasoning_details": [{"type": "synthetic private type", "text": "synthetic private thought"}, None,
+                            {"type": ["synthetic private type"]}]}, ["unknown"], True, False),
+    ({"reasoning_details": {"type": "reasoning.encrypted", "data": "synthetic opaque signature"}}, [], False, False),
+    ({"reasoning": None, "reasoning_content": "", "reasoning_details": []}, [], False, False),
+])
+def test_reasoning_evidence_distinguishes_shapes_without_recording_payloads(
+    metadata, model_request, fields, detail_types, has_text, has_data,
+):
+    metadata["supported_parameters"].append("reasoning")
+    body = _body()
+    body["usage"]["completion_tokens_details"] = {"reasoning_tokens": 0}
+    body["choices"][0]["message"].update(fields)
+    adapter, calls = _adapter(metadata, body)
+    assert adapter.get_reasoning_evidence() is None
+    response = adapter.generate(replace(model_request, reasoning={"enabled": False}))
+    evidence = adapter.get_reasoning_evidence()
+    assert len(calls) == 1 and response.raw_response == "5"
+    assert response.status == ("api_error" if any(fields.values()) else "ok")
+    assert adapter.get_diagnostic()["error_code"] == ("reasoning_not_disabled" if any(fields.values()) else None)
+    assert response.usage["completion_tokens_details.reasoning_tokens"] == 0
+    assert evidence["detail_types"] == detail_types
+    assert evidence["detail_text_nonempty"] is has_text
+    assert evidence["detail_data_nonempty"] is has_data
+    for key in ("reasoning", "reasoning_content", "reasoning_details"):
+        assert evidence[key]["present"] is (key in fields)
+        assert evidence[key]["nonempty"] is bool(fields.get(key))
+    if "reasoning_details" in fields:
+        assert evidence["reasoning_details"]["type"] == ("object" if isinstance(fields["reasoning_details"], dict) else "array")
+    serialized = json.dumps(evidence)
+    assert all(text not in serialized for text in ("synthetic private thought", "synthetic private type", "synthetic opaque signature", TEST_KEY))
+    evidence["reasoning"]["nonempty"] = "mutated"
+    evidence["detail_types"].append("mutated")
+    assert "mutated" not in json.dumps(adapter.get_reasoning_evidence())
+
+
+@pytest.mark.parametrize("failure", ["missing_key", "provider_error", "malformed_response", "sensitive_response"])
+def test_reasoning_evidence_resets_and_rejects_reflected_secrets(metadata, model_request, monkeypatch, failure):
+    body = _body()
+    body["choices"][0]["message"]["reasoning_details"] = [{"type": "reasoning.encrypted", "data": "synthetic signature"}]
+    adapter, calls = _adapter(metadata, body)
+    assert adapter.generate(model_request).status == "ok"
+    assert adapter.get_reasoning_evidence()["detail_types"] == ["reasoning.encrypted"]
+    if failure == "missing_key":
+        monkeypatch.delenv("OPENROUTER_API_KEY")
+    elif failure == "provider_error":
+        body["error"] = {"message": "synthetic provider error"}
+    elif failure == "malformed_response":
+        body["choices"] = []
+    else:
+        body["choices"][0]["message"]["reasoning_details"][0]["data"] = TEST_KEY
+    response = adapter.generate(model_request)
+    assert response.status == "api_error"
+    assert adapter.get_diagnostic()["error_code"] == ("missing_api_key" if failure == "missing_key" else failure)
+    assert adapter.get_reasoning_evidence() is None
+    assert len(calls) == (1 if failure == "missing_key" else 2)
+    assert TEST_KEY not in repr(response) + repr(adapter.get_diagnostic()) + repr(adapter.get_reasoning_evidence())

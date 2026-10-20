@@ -87,6 +87,36 @@ def _contains_secret(value: Any, secret: str) -> bool:
     return False
 
 
+def _reasoning_evidence(message: dict) -> dict:
+    """Describe field shapes with fixed labels, never text or opaque payloads.
+
+    These observations do not establish whether internal reasoning occurred.
+    Unknown detail types stay unknown; provider strings cannot enter the log.
+    """
+    evidence = {}
+    for key in ("reasoning", "reasoning_content", "reasoning_details"):
+        value = message.get(key)
+        kind = ("null" if value is None else "string" if isinstance(value, str)
+                else "array" if isinstance(value, list) else "object" if isinstance(value, dict) else "other")
+        evidence[key] = {"present": key in message, "type": kind, "nonempty": bool(value)}
+    details = message.get("reasoning_details")
+    items = details if isinstance(details, list) else []
+    allowed_types = ("reasoning.text", "reasoning.summary", "reasoning.encrypted")
+    evidence["detail_types"] = sorted({
+        item["type"] if isinstance(item, dict) and item.get("type") in allowed_types else "unknown"
+        for item in items
+    })
+    evidence["detail_text_nonempty"] = any(
+        isinstance(item, dict) and any(isinstance(item.get(key), str) and bool(item[key]) for key in ("text", "summary"))
+        for item in items
+    )
+    evidence["detail_data_nonempty"] = any(
+        isinstance(item, dict) and isinstance(item.get("data"), str) and bool(item["data"])
+        for item in items
+    )
+    return evidence
+
+
 class OpenRouterAdapter(ModelAdapter):
     """Send one POST, without retries, redirects, or model/provider fallback.
 
@@ -102,11 +132,16 @@ class OpenRouterAdapter(ModelAdapter):
         self._model_metadata = deepcopy(model_metadata)
         self._transport = transport
         self._retry_after_s: float | None = None
+        self._reasoning_evidence: dict | None = None
         self.last_diagnostic: dict[str, str | int | bool | None] = {}
 
     def get_diagnostic(self) -> dict[str, str | int | float | bool | None]:
         """Return a copy; preserve the existing last_diagnostic shape."""
         return {**self.last_diagnostic, "retry_after_s": self._retry_after_s}
+
+    def get_reasoning_evidence(self) -> dict | None:
+        """Separate smoke evidence; keep runner diagnostics and responses stable."""
+        return deepcopy(self._reasoning_evidence)
 
     def _failure(
         self, request: ModelRequest, code: str, *, status: str = "api_error",
@@ -154,6 +189,7 @@ class OpenRouterAdapter(ModelAdapter):
             raise TypeError("request must be a ModelRequest")
         self.last_diagnostic = {"error_code": None, "http_status": None, "request_attempted": False}
         self._retry_after_s = None
+        self._reasoning_evidence = None
         try:
             # Recheck mutable request data before any credential lookup or HTTP.
             validate_reasoning(request.reasoning)
@@ -227,6 +263,7 @@ class OpenRouterAdapter(ModelAdapter):
             if raw_response is not None and not isinstance(raw_response, str):
                 raise ValueError("Invalid content")
             finish_reason = _optional_text(choice.get("finish_reason"))
+            self._reasoning_evidence = _reasoning_evidence(message)
             returned_model = metadata["returned_model_id"]
             allowed_ids = {request.model_id}
             canonical = self._model_metadata.get("canonical_slug")
