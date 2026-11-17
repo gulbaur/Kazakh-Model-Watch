@@ -18,7 +18,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest==9.1.1"]
+dev = ["pytest==9.1.1", "pytest-socket==0.7.0"]
 
 [project.urls]
 Repository = "https://github.com/gulbaur/Kazakh-Model-Watch"
@@ -30,4 +30,5 @@ namespaces = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--strict-markers"
+# Tests never reach the network; pytest-socket blocks sockets by default.
+addopts = "--strict-markers --disable-socket"
