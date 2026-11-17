@@ -2,6 +2,7 @@
 
 import os
 import math
+import re
 from copy import deepcopy
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -17,6 +18,17 @@ COMMON_INSTRUCTION = (
     "Тапсырманы орындаңыз. Жауапты сұралған форматта ғана жазыңыз. "
     "Түсіндірме қоспаңыз."
 )
+REASONING_DETAIL_TYPES = ("reasoning.text", "reasoning.summary", "reasoning.encrypted")
+_PROVIDER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()/+-]{0,63}")
+
+
+def upstream_provider_name(value: Any) -> str | None:
+    """Return a short provider label, or None when absent or unusual.
+
+    OpenRouter may report the upstream that served a call. An unusual value is
+    treated as unknown and never changes the response status.
+    """
+    return value if isinstance(value, str) and _PROVIDER_NAME.fullmatch(value) else None
 
 
 def _retry_after(value: str | None) -> float | None:
@@ -101,9 +113,8 @@ def _reasoning_evidence(message: dict) -> dict:
         evidence[key] = {"present": key in message, "type": kind, "nonempty": bool(value)}
     details = message.get("reasoning_details")
     items = details if isinstance(details, list) else []
-    allowed_types = ("reasoning.text", "reasoning.summary", "reasoning.encrypted")
     evidence["detail_types"] = sorted({
-        item["type"] if isinstance(item, dict) and item.get("type") in allowed_types else "unknown"
+        item["type"] if isinstance(item, dict) and item.get("type") in REASONING_DETAIL_TYPES else "unknown"
         for item in items
     })
     evidence["detail_text_nonempty"] = any(
@@ -133,14 +144,15 @@ class OpenRouterAdapter(ModelAdapter):
         self._transport = transport
         self._retry_after_s: float | None = None
         self._reasoning_evidence: dict | None = None
+        self._upstream_provider: str | None = None
         self.last_diagnostic: dict[str, str | int | bool | None] = {}
 
     def get_diagnostic(self) -> dict[str, str | int | float | bool | None]:
         """Return a copy; preserve the existing last_diagnostic shape."""
-        return {**self.last_diagnostic, "retry_after_s": self._retry_after_s}
+        return {**self.last_diagnostic, "retry_after_s": self._retry_after_s, "upstream_provider": self._upstream_provider}
 
     def get_reasoning_evidence(self) -> dict | None:
-        """Separate smoke evidence; keep runner diagnostics and responses stable."""
+        """Fixed-label field shapes; never reasoning text or opaque payloads."""
         return deepcopy(self._reasoning_evidence)
 
     def _failure(
@@ -190,6 +202,7 @@ class OpenRouterAdapter(ModelAdapter):
         self.last_diagnostic = {"error_code": None, "http_status": None, "request_attempted": False}
         self._retry_after_s = None
         self._reasoning_evidence = None
+        self._upstream_provider = None
         try:
             # Recheck mutable request data before any credential lookup or HTTP.
             validate_reasoning(request.reasoning)
@@ -239,6 +252,7 @@ class OpenRouterAdapter(ModelAdapter):
             return self._failure(request, "sensitive_response")
         if not isinstance(body, dict):
             return self._failure(request, "http_error" if not response.is_success else "malformed_response")
+        self._upstream_provider = upstream_provider_name(body.get("provider"))
 
         metadata: dict[str, Any] = {}
         raw_response = None

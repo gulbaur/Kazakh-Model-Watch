@@ -143,6 +143,16 @@ def test_tied_accuracy_keeps_equal_rank_and_stable_model_order(evaluation_inputs
     assert "N/A" in text and "OFFLINE SYNTHETIC" in text
 
 
+def test_leaderboard_shows_fractions_and_percentages(evaluation_inputs, tmp_path):
+    adapters = {"mock_1": ScriptedAdapter(), "mock_2": ScriptedAdapter([("timeout", None, {})] + [("ok", "5", {})] * 5)}
+    directory = run_benchmark(*evaluation_inputs, mock=True, adapters=adapters, sleep=lambda _: None, output_root=tmp_path / "results")
+    text = (directory / "leaderboard.md").read_text(encoding="utf-8")
+    # Synthetic "5" answers: only the two numbers items match the references.
+    assert "| 2/6 | 33.33% | 2/6 (33.33%) | 6/6 (100.00%) |" in text
+    assert "| numbers | 2/2 | 100.00% | 2/2 (100.00%) | 2/2 (100.00%) |" in text
+    assert "| dates | 0/2 | 0.00% | 0/2 (0.00%) | 2/2 (100.00%) |" in text
+
+
 def test_report_rejects_a_retry_for_a_nonretryable_error(evaluation_inputs, tmp_path):
     adapters = {"mock_1": ScriptedAdapter([("timeout", None, {})]), "mock_2": ScriptedAdapter()}
     directory = run_benchmark(*evaluation_inputs, mock=True, output_root=tmp_path / "results", sleep=lambda _: None, adapters=adapters)
@@ -152,3 +162,46 @@ def test_report_rejects_a_retry_for_a_nonretryable_error(evaluation_inputs, tmp_
     write_json(directory / "responses.json", rows)
     with pytest.raises(RunError, match="invalid_retry_chain"):
         report(directory)
+
+
+def test_legacy_attempts_without_new_diagnostics_are_reported_as_unknown(evaluation_inputs, tmp_path):
+    directory = run_benchmark(*evaluation_inputs, mock=True, output_root=tmp_path / "results")
+    rows = read_json(directory / "responses.json")
+    for row in rows:
+        for attempt in row["attempts"]:
+            del attempt["upstream_provider"], attempt["reasoning_evidence"]
+    write_json(directory / "responses.json", rows)
+    manifest = read_json(directory / "manifest.json")
+    for model in manifest["models"]:
+        del model["upstream_providers"]
+    write_json(directory / "manifest.json", manifest)
+    report(directory)
+    rows = read_json(directory / "responses.json")
+    assert all(a["upstream_provider"] is None and a["reasoning_evidence"] is None for row in rows for a in row["attempts"])
+    assert "Upstream providers: unknown" in (directory / "leaderboard.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("evidence", [
+    {"reasoning": "synthetic private thought"},
+    "synthetic private thought",
+    {"reasoning": {"present": True, "type": "string", "nonempty": True},
+     "reasoning_content": {"present": False, "type": "null", "nonempty": False},
+     "reasoning_details": {"present": False, "type": "null", "nonempty": False},
+     "detail_types": ["synthetic private type"], "detail_text_nonempty": False, "detail_data_nonempty": False},
+])
+def test_report_rejects_saved_evidence_outside_fixed_labels(evaluation_inputs, tmp_path, evidence):
+    directory = run_benchmark(*evaluation_inputs, mock=True, output_root=tmp_path / "results")
+    rows = read_json(directory / "responses.json")
+    rows[0]["attempts"][0]["reasoning_evidence"] = evidence
+    write_json(directory / "responses.json", rows)
+    with pytest.raises(RunError, match="invalid_reasoning_evidence"):
+        report(directory)
+
+
+def test_report_drops_unsafe_saved_upstream_provider(evaluation_inputs, tmp_path):
+    directory = run_benchmark(*evaluation_inputs, mock=True, output_root=tmp_path / "results")
+    rows = read_json(directory / "responses.json")
+    rows[0]["attempts"][0]["upstream_provider"] = "synthetic\nmultiline"
+    write_json(directory / "responses.json", rows)
+    report(directory)
+    assert read_json(directory / "responses.json")[0]["attempts"][0]["upstream_provider"] is None

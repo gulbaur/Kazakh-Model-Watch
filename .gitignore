@@ -18,6 +18,9 @@ secrets/
 /data/private/
 /data/local/
 
+# Local session notes
+/HANDOFF.md
+
 # Run outputs require an explicit review before inclusion in Git
 /results/
 /logs/

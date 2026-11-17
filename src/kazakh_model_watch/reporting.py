@@ -16,6 +16,7 @@ from .config import load_config, read_json
 from .dataset import load_dataset
 from .model_adapter import ModelResponse
 from .normalization import normalize_answer
+from .openrouter_adapter import REASONING_DETAIL_TYPES, upstream_provider_name
 from .scoring import score_response
 
 
@@ -88,7 +89,49 @@ def safe_diagnostic(value) -> dict:
         "error_code": code if isinstance(code, str) and code in ERROR_CODES else None,
         "retry_after_s": delay if type(delay) in (int, float) and math.isfinite(delay) and delay >= 0 else None,
         "request_attempted": attempted if type(attempted) is bool else None,
+        "upstream_provider": upstream_provider_name(value.get("upstream_provider")),
     }
+
+
+_EVIDENCE_FIELDS = ("reasoning", "reasoning_content", "reasoning_details")
+_EVIDENCE_KINDS = {"null", "string", "array", "object", "other"}
+_DETAIL_LABELS = (*REASONING_DETAIL_TYPES, "unknown")
+
+
+def safe_reasoning_evidence(value) -> dict | None:
+    """Rebuild evidence from fixed labels and booleans; reject anything else.
+
+    Evidence describes field shapes only. It never proves or disproves internal
+    reasoning, and free text from a provider or a saved file cannot pass here.
+    """
+    if value is None:
+        return None
+    expected = {*_EVIDENCE_FIELDS, "detail_types", "detail_text_nonempty", "detail_data_nonempty"}
+    if not isinstance(value, dict) or set(value) != expected:
+        raise RunError("invalid_reasoning_evidence")
+    result = {}
+    for key in _EVIDENCE_FIELDS:
+        field = value[key]
+        if (not isinstance(field, dict) or set(field) != {"present", "type", "nonempty"}
+                or type(field["present"]) is not bool or type(field["nonempty"]) is not bool
+                or not isinstance(field["type"], str) or field["type"] not in _EVIDENCE_KINDS):
+            raise RunError("invalid_reasoning_evidence")
+        result[key] = {"present": field["present"], "type": field["type"], "nonempty": field["nonempty"]}
+    types = value["detail_types"]
+    if (not isinstance(types, list) or not all(isinstance(t, str) and t in _DETAIL_LABELS for t in types)
+            or types != sorted(set(types))):
+        raise RunError("invalid_reasoning_evidence")
+    result["detail_types"] = list(types)
+    for key in ("detail_text_nonempty", "detail_data_nonempty"):
+        if type(value[key]) is not bool:
+            raise RunError("invalid_reasoning_evidence")
+        result[key] = value[key]
+    return result
+
+
+def upstream_providers(rows: list[dict], model_key: str) -> list[str]:
+    return sorted({attempt["upstream_provider"] for row in rows if row["model_key"] == model_key
+                   for attempt in row["attempts"] if attempt.get("upstream_provider") is not None})
 
 
 def retry_delay(response: ModelResponse, diagnostic: dict) -> float | None:
@@ -160,7 +203,15 @@ def _csv(rows: list[dict]) -> bytes:
     return stream.getvalue().encode("utf-8")
 
 
-def _leaderboard(manifest: dict, metrics: list[dict]) -> str:
+def _upstream_line(providers: dict[str, list[str]]) -> str:
+    if not any(providers.values()):
+        return "Upstream providers: unknown (not reported by the API)."
+    return "Upstream providers: " + "; ".join(
+        f"{key}: {', '.join(names) if names else 'unknown'}" for key, names in providers.items()
+    ) + ". Different upstreams may differ in serving setup; see attempts in responses.json."
+
+
+def _leaderboard(manifest: dict, metrics: list[dict], providers: dict[str, list[str]]) -> str:
     label = "OFFLINE SYNTHETIC — NOT A MODEL BENCHMARK" if manifest["mode"] == "mock" else "Benchmark run"
     lines = [f"# {label}", "", f"Run `{manifest['run_id']}`; status **{manifest['run_status']}**; started {manifest['started_at']}.", "",
              "| Rank | Provider/model | Correct | Accuracy | Exact match | Coverage | Errors | Mean ms | Median ms | Latency N | Cost |",
@@ -169,17 +220,23 @@ def _leaderboard(manifest: dict, metrics: list[dict]) -> str:
     previous, rank = None, 0
     def number(value):
         return "N/A" if value is None else f"{value:.2f}"
+    def scores(values):
+        # The spec publishes both fractions and percentages for every rate.
+        return (f"{values['correct']}/{values['n']} | {values['accuracy']:.2%} | "
+                f"{values['exact_match']}/{values['n']} ({values['exact_match_rate']:.2%}) | "
+                f"{values['status_counts']['ok']}/{values['n']} ({values['coverage']:.2%})")
     for index, model in enumerate(ordered, 1):
         if model["accuracy"] != previous:
             rank = index
         previous = model["accuracy"]
-        lines.append(f"| {rank} | {model['provider']}/{model['model_id']} | {model['correct']}/{model['n']} | {model['accuracy']:.2%} | {model['exact_match_rate']:.2%} | {model['coverage']:.2%} | {model['errors']} | {number(model['latency_mean_ms'])} | {number(model['latency_median_ms'])} | {model['latency_sample_count']} | N/A |")
+        lines.append(f"| {rank} | {model['provider']}/{model['model_id']} | {scores(model)} | {model['errors']} | {number(model['latency_mean_ms'])} | {number(model['latency_median_ms'])} | {model['latency_sample_count']} | N/A |")
     lines += ["", "## Categories", "", "| Provider/model | Category | Correct | Accuracy | Exact match | Coverage |", "| --- | --- | --- | --- | --- | --- |"]
     for model in ordered:
         for category, values in model["categories"].items():
-            lines.append(f"| {model['provider']}/{model['model_id']} | {category} | {values['correct']}/{values['n']} | {values['accuracy']:.2%} | {values['exact_match_rate']:.2%} | {values['coverage']:.2%} |")
+            lines.append(f"| {model['provider']}/{model['model_id']} | {category} | {scores(values)} |")
     lines += ["", f"Versions: {manifest['protocol_version']}, {manifest['dataset_version']}, {manifest['scoring_version']}, {manifest['normalization_version']}.",
               "Profile: " + json.dumps(manifest["profile"], ensure_ascii=False, sort_keys=True) + ".",
+              _upstream_line(providers),
               "Small fixed dataset; latency includes network and is not pure inference speed. Mutable aliases and provider defaults limit reproducibility.",
               "Cost is unknown; no prices or token counts have been estimated.",
               "", "Artifacts: [manifest](manifest.json), [dataset](dataset.jsonl), [config](config.json), [responses JSON](responses.json), [responses CSV](responses.csv), [metrics JSON](metrics.json), [metrics CSV](metrics.csv).", ""]
@@ -261,7 +318,8 @@ def report(run_dir: str | Path) -> dict:
                     raise RunError("invalid_retry_chain")
             if manifest["mode"] == "mock" and any(attempt.get(key) is not None for key in ("latency_ms", "elapsed_ms")):
                 raise RunError("mock_timing_is_not_model_latency")
-            sanitized = {**asdict(response), **safe_diagnostic(attempt), "attempt_number": index,
+            sanitized = {**asdict(response), **safe_diagnostic(attempt),
+                         "reasoning_evidence": safe_reasoning_evidence(attempt.get("reasoning_evidence")), "attempt_number": index,
                          "elapsed_ms": attempt.get("elapsed_ms"), "retry_delay_s": attempt.get("retry_delay_s"),
                          "retry_wait_completed": attempt.get("retry_wait_completed"),
                          "cost": None, "cost_unknown_reason": "billing_not_collected"}
@@ -281,5 +339,6 @@ def report(run_dir: str | Path) -> dict:
         flat.append({**base, "category": "all"})
         flat.extend({**base, **values, "category": category} for category, values in model["categories"].items())
     atomic_write(directory / "metrics.csv", _csv(flat))
-    atomic_write(directory / "leaderboard.md", _leaderboard(manifest, metrics).encode("utf-8"))
+    providers = {model["key"]: upstream_providers(rows, model["key"]) for model in config["models"]}
+    atomic_write(directory / "leaderboard.md", _leaderboard(manifest, metrics, providers).encode("utf-8"))
     return {"run_id": manifest["run_id"], "run_status": manifest["run_status"], "mode": manifest["mode"], "pair_count": len(rows), "models": metrics}

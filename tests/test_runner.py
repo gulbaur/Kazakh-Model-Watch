@@ -382,3 +382,75 @@ def test_protocol_preflight_precedes_credentials_adapters_and_output(input_facto
     with pytest.raises(ConfigValidationError):
         run_benchmark(dataset, config_path, live=True, output_root=tmp_path / "results")
     assert not (tmp_path / "results").exists()
+
+
+def _non_thinking_inputs(input_factory):
+    dataset, config_path = input_factory(full=True, real=True)
+    config = load_config(config_path)
+    config["protocol_version"] = "mvp-v2-non-thinking"
+    config["profile"]["reasoning"] = {"enabled": False}
+    for model in config["models"]:
+        model["metadata"]["model"]["supported_parameters"].append("reasoning")
+        model["metadata"]["endpoints"][0]["supported_parameters"].append("reasoning")
+    config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+    return dataset, config_path, config
+
+
+def test_live_attempts_keep_upstream_provider_and_reasoning_evidence(input_factory, tmp_path, monkeypatch):
+    dataset, config_path, config = _non_thinking_inputs(input_factory)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-runner-evidence-credential")
+    calls = []
+    def handler(request):
+        payload = json.loads(request.content)
+        calls.append(payload)
+        message = {"content": "5"}
+        if len(calls) == 1:
+            message["reasoning_details"] = [{"type": "reasoning.encrypted", "data": "synthetic opaque signature"}]
+        body = {"id": "synthetic-request", "model": payload["model"],
+                "choices": [{"finish_reason": "stop", "message": message}],
+                "usage": {"completion_tokens": 1, "completion_tokens_details": {"reasoning_tokens": 0}}}
+        if len(calls) != 2:
+            body["provider"] = "Synthetic Upstream" if len(calls) % 2 else "Other Upstream"
+        return httpx.Response(200, json=body)
+    adapters = {m["key"]: OpenRouterAdapter(m["metadata"]["model"], transport=httpx.MockTransport(handler)) for m in config["models"]}
+    directory = run_benchmark(dataset, config_path, live=True, adapters=adapters, output_root=tmp_path / "results")
+    rows = read_json(directory / "responses.json")
+    first, second = rows[0]["attempts"][0], rows[1]["attempts"][0]
+    assert rows[0]["status"] == "api_error" and first["error_code"] == "reasoning_not_disabled"
+    assert first["upstream_provider"] == "Synthetic Upstream"
+    assert first["reasoning_evidence"]["detail_types"] == ["reasoning.encrypted"]
+    assert first["reasoning_evidence"]["detail_data_nonempty"] is True
+    assert first["reasoning_evidence"]["detail_text_nonempty"] is False
+    assert second["upstream_provider"] is None and second["reasoning_evidence"]["detail_types"] == []
+    assert rows[1]["status"] == "ok"
+    manifest = read_json(directory / "manifest.json")
+    providers = {model["key"]: model["upstream_providers"] for model in manifest["models"]}
+    assert sorted(set().union(*providers.values())) == ["Other Upstream", "Synthetic Upstream"]
+    leaderboard = (directory / "leaderboard.md").read_text(encoding="utf-8")
+    assert "Upstream providers" in leaderboard and "Synthetic Upstream" in leaderboard
+    text = "".join(p.read_text(encoding="utf-8") for p in directory.iterdir())
+    assert "synthetic opaque signature" not in text and "synthetic-runner-evidence-credential" not in text
+    before = {p.name: p.read_bytes() for p in directory.iterdir()}
+    monkeypatch.delenv("OPENROUTER_API_KEY")
+    report(directory)
+    assert before == {p.name: p.read_bytes() for p in directory.iterdir()}
+
+
+def test_mock_attempts_have_unknown_upstream_and_no_evidence(evaluation_inputs, tmp_path):
+    directory = run_benchmark(*evaluation_inputs, mock=True, output_root=tmp_path / "results")
+    rows = read_json(directory / "responses.json")
+    assert all(a["upstream_provider"] is None and a["reasoning_evidence"] is None for row in rows for a in row["attempts"])
+    assert all(model["upstream_providers"] == [] for model in read_json(directory / "manifest.json")["models"])
+    assert "Upstream providers: unknown" in (directory / "leaderboard.md").read_text(encoding="utf-8")
+
+
+def test_invalid_adapter_evidence_becomes_adapter_exception(evaluation_inputs, tmp_path):
+    class LeakyEvidence(ScriptedAdapter):
+        def get_reasoning_evidence(self):
+            return {"reasoning": "synthetic private thought"}
+    adapters = {"mock_1": LeakyEvidence(), "mock_2": ScriptedAdapter()}
+    directory = run_benchmark(*evaluation_inputs, mock=True, adapters=adapters, output_root=tmp_path / "results")
+    rows = read_json(directory / "responses.json")
+    assert rows[0]["status"] == "api_error" and rows[0]["error"]["error_code"] == "adapter_exception"
+    assert rows[0]["attempts"][0]["reasoning_evidence"] is None
+    assert "synthetic private thought" not in "".join(p.read_text(encoding="utf-8") for p in directory.iterdir())
