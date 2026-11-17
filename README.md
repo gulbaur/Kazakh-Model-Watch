@@ -39,7 +39,6 @@ kazakh-model-watch/
 │   ├── models.json           # два реальных кандидата, пока not_ready
 │   └── mock_models.json      # два явно синтетических offline mock
 ├── data/
-│   ├── benchmark.json       # пустая исходная заготовка; не используется loader
 │   └── benchmark.jsonl      # 24 отобранных кандидата, review.status=draft
 ├── docs/
 │   ├── MVP_SPEC.md          # основная техническая спецификация
@@ -47,7 +46,6 @@ kazakh-model-watch/
 │   ├── ISSUE9_NON_THINKING_PROFILE.md
 │   └── TASK5_REVIEW.md
 ├── src/
-│   ├── .gitkeep
 │   └── kazakh_model_watch/
 │       ├── __init__.py
 │       ├── __main__.py      # CLI validate / run / report
@@ -62,7 +60,6 @@ kazakh-model-watch/
 │       ├── reporting.py     # атомарные артефакты и offline report
 │       └── scoring.py       # exact match и normalized correctness
 ├── tests/
-│   ├── .gitkeep
 │   ├── conftest.py
 │   ├── test_cli.py
 │   ├── test_config.py
