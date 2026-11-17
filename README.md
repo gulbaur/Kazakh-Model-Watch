@@ -2,7 +2,7 @@
 
 A small, reproducible benchmark of large language models on short tasks in Kazakh, with deterministic scoring and every model response saved.
 
-> **Status: work in progress.** The evaluation pipeline is implemented and tested offline. The 24-item dataset is still a draft awaiting review by a Kazakh speaker, and no full benchmark run has been completed, so **there is no leaderboard yet**.
+> **Status:** the evaluation pipeline (validation, gated model calls, scoring, reports) is implemented and tested. The first benchmark run is pending: the 24-item dataset is awaiting review by a Kazakh speaker, so no leaderboard has been published yet.
 
 ## Why
 
