@@ -135,7 +135,11 @@ def _live(config: dict, content: bytes, plan: list, budget: str, run_id: str) ->
             ended = time.perf_counter()
             response = ModelResponse(status="api_error", raw_response=None, requested_model_id=request.model_id)
             diagnostic = safe_diagnostic({"error_code": "adapter_exception"})
-        if not isinstance(response, ModelResponse) or response.requested_model_id != request.model_id or _contains_secret([asdict(response), reasoning_evidence], key):
+        if not isinstance(response, ModelResponse) or response.requested_model_id != request.model_id:
+            response = ModelResponse(status="api_error", raw_response=None, requested_model_id=request.model_id)
+            diagnostic = safe_diagnostic({"error_code": "invalid_adapter_response"})
+            reasoning_evidence = None
+        elif _contains_secret([asdict(response), reasoning_evidence, diagnostic], key):
             response = ModelResponse(status="api_error", raw_response=None, requested_model_id=request.model_id)
             diagnostic = safe_diagnostic({"error_code": "sensitive_response"})
             reasoning_evidence = None

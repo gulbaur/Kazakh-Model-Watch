@@ -363,6 +363,24 @@ def test_upstream_provider_is_saved_for_each_probe(local_io, monkeypatch):
     assert first["checks"] == second["checks"] == []
 
 
+def test_unexpected_adapter_response_is_not_labelled_as_sensitive(local_io, monkeypatch):
+    class WrongIdentity:
+        def __init__(self, metadata):
+            self.inner = OpenRouterAdapter(metadata, transport=httpx.MockTransport(lambda _: pytest.fail("No HTTP expected")))
+        def generate(self, request):
+            from kazakh_model_watch.model_adapter import ModelResponse
+            return ModelResponse(status="ok", raw_response="5", requested_model_id="synthetic/other-model")
+        def get_diagnostic(self):
+            return {"http_status": 200, "error_code": None, "request_attempted": True}
+        def get_reasoning_evidence(self):
+            return None
+    monkeypatch.setattr(smoke, "OpenRouterAdapter", WrongIdentity)
+    assert smoke.main(LIVE) == 1
+    first, second = _saved(local_io[1])["responses"]
+    assert first["status"] == "api_error" and first["error_code"] == "invalid_adapter_response"
+    assert first["raw_response"] is None and second["status"] == "not_run"
+
+
 def test_not_run_and_unfinished_rows_have_unknown_upstream(local_io, monkeypatch):
     calls = _transport(monkeypatch, lambda *_: httpx.Response(500, json={"error": {"message": "synthetic"}}))
     assert smoke.main(LIVE) == 1 and len(calls) == 1

@@ -220,15 +220,20 @@ def _leaderboard(manifest: dict, metrics: list[dict], providers: dict[str, list[
     previous, rank = None, 0
     def number(value):
         return "N/A" if value is None else f"{value:.2f}"
+    def scores(values):
+        # The spec publishes both fractions and percentages for every rate.
+        return (f"{values['correct']}/{values['n']} | {values['accuracy']:.2%} | "
+                f"{values['exact_match']}/{values['n']} ({values['exact_match_rate']:.2%}) | "
+                f"{values['status_counts']['ok']}/{values['n']} ({values['coverage']:.2%})")
     for index, model in enumerate(ordered, 1):
         if model["accuracy"] != previous:
             rank = index
         previous = model["accuracy"]
-        lines.append(f"| {rank} | {model['provider']}/{model['model_id']} | {model['correct']}/{model['n']} | {model['accuracy']:.2%} | {model['exact_match_rate']:.2%} | {model['coverage']:.2%} | {model['errors']} | {number(model['latency_mean_ms'])} | {number(model['latency_median_ms'])} | {model['latency_sample_count']} | N/A |")
+        lines.append(f"| {rank} | {model['provider']}/{model['model_id']} | {scores(model)} | {model['errors']} | {number(model['latency_mean_ms'])} | {number(model['latency_median_ms'])} | {model['latency_sample_count']} | N/A |")
     lines += ["", "## Categories", "", "| Provider/model | Category | Correct | Accuracy | Exact match | Coverage |", "| --- | --- | --- | --- | --- | --- |"]
     for model in ordered:
         for category, values in model["categories"].items():
-            lines.append(f"| {model['provider']}/{model['model_id']} | {category} | {values['correct']}/{values['n']} | {values['accuracy']:.2%} | {values['exact_match_rate']:.2%} | {values['coverage']:.2%} |")
+            lines.append(f"| {model['provider']}/{model['model_id']} | {category} | {scores(values)} |")
     lines += ["", f"Versions: {manifest['protocol_version']}, {manifest['dataset_version']}, {manifest['scoring_version']}, {manifest['normalization_version']}.",
               "Profile: " + json.dumps(manifest["profile"], ensure_ascii=False, sort_keys=True) + ".",
               _upstream_line(providers),

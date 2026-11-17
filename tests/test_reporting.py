@@ -143,6 +143,16 @@ def test_tied_accuracy_keeps_equal_rank_and_stable_model_order(evaluation_inputs
     assert "N/A" in text and "OFFLINE SYNTHETIC" in text
 
 
+def test_leaderboard_shows_fractions_and_percentages(evaluation_inputs, tmp_path):
+    adapters = {"mock_1": ScriptedAdapter(), "mock_2": ScriptedAdapter([("timeout", None, {})] + [("ok", "5", {})] * 5)}
+    directory = run_benchmark(*evaluation_inputs, mock=True, adapters=adapters, sleep=lambda _: None, output_root=tmp_path / "results")
+    text = (directory / "leaderboard.md").read_text(encoding="utf-8")
+    # Synthetic "5" answers: only the two numbers items match the references.
+    assert "| 2/6 | 33.33% | 2/6 (33.33%) | 6/6 (100.00%) |" in text
+    assert "| numbers | 2/2 | 100.00% | 2/2 (100.00%) | 2/2 (100.00%) |" in text
+    assert "| dates | 0/2 | 0.00% | 0/2 (0.00%) | 2/2 (100.00%) |" in text
+
+
 def test_report_rejects_a_retry_for_a_nonretryable_error(evaluation_inputs, tmp_path):
     adapters = {"mock_1": ScriptedAdapter([("timeout", None, {})]), "mock_2": ScriptedAdapter()}
     directory = run_benchmark(*evaluation_inputs, mock=True, output_root=tmp_path / "results", sleep=lambda _: None, adapters=adapters)
