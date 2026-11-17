@@ -91,7 +91,7 @@ def _checks(response: ModelResponse, diagnostic: dict) -> list[str]:
 def _empty_result(model_id: str) -> dict:
     return {**asdict(ModelResponse(status="not_run", raw_response=None, requested_model_id=model_id)),
             "elapsed_ms": None, "http_status": None, "error_code": None, "request_attempted": False,
-            "reasoning_evidence": None, "checks": []}
+            "upstream_provider": None, "reasoning_evidence": None, "checks": []}
 
 
 def _live(config: dict, content: bytes, plan: list, budget: str, run_id: str) -> dict:
@@ -115,7 +115,7 @@ def _live(config: dict, content: bytes, plan: list, budget: str, run_id: str) ->
         # resume this run or misrepresent a potentially billable call as not_run.
         pending = {**asdict(ModelResponse(status="api_error", raw_response=None, requested_model_id=request.model_id)),
                    "elapsed_ms": None, "http_status": None, "error_code": "unfinished_attempt",
-                   "request_attempted": None, "reasoning_evidence": None, "checks": ["unfinished_attempt"]}
+                   "request_attempted": None, "upstream_provider": None, "reasoning_evidence": None, "checks": ["unfinished_attempt"]}
         result["responses"][index] = pending
         write_json(output, result)
         started = time.perf_counter()
@@ -143,7 +143,7 @@ def _live(config: dict, content: bytes, plan: list, budget: str, run_id: str) ->
         response = replace(response, latency_ms=elapsed if response.status == "ok" else None)
         checks = _checks(response, diagnostic)
         result["responses"][index] = {**asdict(response), "elapsed_ms": elapsed,
-                                      **{key: diagnostic[key] for key in ("http_status", "error_code", "request_attempted")},
+                                      **{key: diagnostic[key] for key in ("http_status", "error_code", "request_attempted", "upstream_provider")},
                                       "reasoning_evidence": reasoning_evidence, "checks": checks}
         if checks:
             result.update(run_status="interrupted" if interrupted else "stopped", stop_reason=checks[0])

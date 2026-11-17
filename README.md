@@ -2,7 +2,7 @@
 
 Небольшой benchmark AI-моделей на казахском языке с вручную проверенными заданиями и сохранёнными ответами. Приоритет MVP — минимальный работающий pipeline и реальные измерения.
 
-**Статус:** Dataset Loader, Scoring Engine, Model Adapter Foundation, OpenRouter Integration и offline foundation Evaluation Runner. Есть CLI `validate` / `run` / `report`, локальные артефакты и synthetic mock-режим. Все 24 задания остаются черновиками; две реальные модели в конфигурации имеют статус `not_ready`. 2026-10-15 выполнен один подтверждённый smoke-вызов `qwen/qwen3.5-9b`, получен ответ `5`. Offline workflow GitHub Actions реализован; базовая интеграция проверена CI на Python 3.11 и 3.13. Новых live-вызовов и полного реального сравнения на этапе runner не было.
+**Статус:** Dataset Loader, Scoring Engine, Model Adapter Foundation, OpenRouter Integration, offline foundation Evaluation Runner и ограниченный smoke non-thinking профиля. Есть CLI `validate` / `run` / `report`, локальные артефакты и synthetic mock-режим. Все 24 задания остаются черновиками; две реальные модели в конфигурации имеют статус `not_ready`. Реальные вызовы: 2026-10-15 один smoke-вызов `qwen/qwen3.5-9b` по историческому профилю и 2026-10-20 один ограниченный парный smoke `mvp-v2-non-thinking`, остановленный на Gemini (см. ниже). Offline workflow GitHub Actions проверяет код на Python 3.11 и 3.13. Полного реального сравнения не было.
 
 Основная техническая спецификация — [docs/MVP_SPEC.md](docs/MVP_SPEC.md). Реализация и критерии готовности определяются этим документом.
 
@@ -42,7 +42,10 @@ kazakh-model-watch/
 │   ├── benchmark.json       # пустая исходная заготовка; не используется loader
 │   └── benchmark.jsonl      # 24 отобранных кандидата, review.status=draft
 ├── docs/
-│   └── MVP_SPEC.md          # основная техническая спецификация
+│   ├── MVP_SPEC.md          # основная техническая спецификация
+│   ├── LIMITED_SMOKE_PROPOSAL.md # механика ограниченного smoke
+│   ├── ISSUE9_NON_THINKING_PROFILE.md
+│   └── TASK5_REVIEW.md
 ├── src/
 │   ├── .gitkeep
 │   └── kazakh_model_watch/
@@ -51,9 +54,10 @@ kazakh-model-watch/
 │       ├── config.py        # offline-валидация публичной конфигурации
 │       ├── dataset.py       # загрузка и валидация JSONL
 │       ├── model_adapter.py # ModelRequest, ModelResponse, интерфейс и offline mock
+│       ├── non_thinking_smoke.py # ограниченный парный smoke, dry-run по умолчанию
 │       ├── normalization.py # общая нормализация kk-short-v1
 │       ├── openrouter_adapter.py
-│       ├── openrouter_smoke.py
+│       ├── openrouter_smoke.py # исторический одиночный smoke Qwen
 │       ├── runner.py        # preflight, последовательные вызовы, retry
 │       ├── reporting.py     # атомарные артефакты и offline report
 │       └── scoring.py       # exact match и normalized correctness
@@ -64,6 +68,7 @@ kazakh-model-watch/
 │   ├── test_config.py
 │   ├── test_dataset.py
 │   ├── test_model_adapter.py
+│   ├── test_non_thinking_smoke.py
 │   ├── test_openrouter_adapter.py
 │   ├── test_reporting.py
 │   ├── test_runner.py
@@ -75,7 +80,7 @@ kazakh-model-watch/
 └── pyproject.toml
 ```
 
-`data/benchmark.jsonl` содержит черновики для разработки: два задания numbers, два dates и одно morphology. Эталоны — кандидаты для будущей ручной проверки. Публичные конфигурации находятся в `config/`; артефакты запуска создаются в игнорируемом `results/<run_id>/`. Корневой `LEADERBOARD.md` на этом этапе не формируется.
+`data/benchmark.jsonl` содержит 24 черновика для разработки: по 8 заданий numbers, dates и morphology, все с `review.status=draft`. Эталоны — кандидаты для будущей ручной проверки. Публичные конфигурации находятся в `config/`; артефакты запуска создаются в игнорируемом `results/<run_id>/`. Корневой `LEADERBOARD.md` на этом этапе не формируется.
 
 ## Локальное окружение
 
@@ -132,11 +137,15 @@ Offline-проверка чернового датасета и конфигур
 
 Для будущего реального сравнения владелец утвердил **`mvp-v2-non-thinking`**: общий профиль обязательно включает `reasoning: {"enabled": false}`, а `max_output_tokens=128` означает отправленный API-параметр `max_tokens=128`. Это запрос режима, без гарантии отсутствия внутреннего reasoning, 128 именно видимых токенов или финансового hard cap. Разрешён только enabled=false, без effort/exclude. Сообщённый reasoning даёт `api_error/reasoning_not_disabled` с сохранением видимого текста и usage; `length` остаётся `truncated`. Config, manifest и leaderboard сохраняют версию. Старые `mvp-v1` snapshots пересчитываются offline; новое реальное сравнение с `mvp-v1` и reasoning отклоняется до сети. Ни одна модель не переведена в ready: остаются live-проверка, human verification датасета и отдельное разрешение расходов. Правила — в [docs/MVP_SPEC.md](docs/MVP_SPEC.md); история подготовки — в [docs/ISSUE9_NON_THINKING_PROFILE.md](docs/ISSUE9_NON_THINKING_PROFILE.md).
 
-После PR #10 подготовлен отдельный ограниченный smoke CLI для двух моделей. Без сети его можно проверить командой `.\.venv\Scripts\python.exe -m kazakh_model_watch.non_thinking_smoke`: выводятся оба payload из config/models.json с enabled=false; ключи и .env не читаются. Будущий live требует явного --live, отдельно согласованного значения --approved-budget-usd и разрешения владельца. Максимум один POST на модель, без retries/fallback; при ошибке или неизвестном/аномальном usage Qwen запрос Gemini не выполняется. Локальные diagnostics сохраняются атомарно в игнорируемом logs/non-thinking-smoke; консоль не выводит raw response. Принятая версия протокола, предлагаемый бюджет, ограничения и порядок проверки описаны в [docs/LIMITED_SMOKE_PROPOSAL.md](docs/LIMITED_SMOKE_PROPOSAL.md). Live на этом этапе не запускался.
+После PR #10 подготовлен отдельный ограниченный smoke CLI для двух моделей. Без сети его можно проверить командой `.\.venv\Scripts\python.exe -m kazakh_model_watch.non_thinking_smoke`: выводятся оба payload из config/models.json с enabled=false; ключи и .env не читаются. Будущий live требует явного --live, отдельно согласованного значения --approved-budget-usd и разрешения владельца. Максимум один POST на модель, без retries/fallback; при ошибке или неизвестном/аномальном usage Qwen запрос Gemini не выполняется. Локальные diagnostics сохраняются атомарно в игнорируемом logs/non-thinking-smoke; консоль не выводит raw response. Принятая версия протокола, предлагаемый бюджет, ограничения и порядок проверки описаны в [docs/LIMITED_SMOKE_PROPOSAL.md](docs/LIMITED_SMOKE_PROPOSAL.md).
+
+2026-10-20 выполнен один разрешённый запуск `limited-profile-20261020-01`. Qwen: HTTP 200, `ok`, `finish_reason=stop`, completion 2, reasoning 0. Gemini: HTTP 200, `api_error/reasoning_not_disabled` при completion 1 и reasoning 0, то есть сработало непустое reasoning-поле ответа. Итог — `stopped`. В том журнале ещё нет `reasoning_evidence`, поэтому тип этого поля неизвестен; результат не пересчитывается задним числом. Новые запуски сохраняют форму reasoning-полей без их содержимого. Диагностика остаётся локально в игнорируемом `logs/`.
 
 Порядок заданий перемешивается локальным `Random(42)`, порядок моделей циклически чередуется. Runner делает максимум две попытки: повтор только после timeout, network error или HTTP 429/5xx. Ожидание — максимум из 2 секунд и Retry-After; при Retry-After больше 60 секунд повтора нет. Поддерживается Retry-After в секундах и в формате HTTP-date; сохраняются разобранная задержка, история реальных попыток, запланированный `retry_delay_s` и факт завершения ожидания `retry_wait_completed`. Качество ответа, 401/402, content_filter, empty_response и truncated не вызывают повторов. Внутренних retries/fallback у адаптера нет.
 
 В `results/<run_id>/` сохраняются `manifest.json`, точные входные `dataset.jsonl` и `config.json`, `responses.json/csv`, `metrics.json/csv` и `leaderboard.md`. Manifest фиксирует версии протокола/датасета/scoring/Unicode, SHA256 входов и инструкции, Git SHA/dirty, окружение, профиль и фактический порядок. Неизвестные версии зависимостей остаются `null`, включая build-only setuptools при изолированной сборке. JSON заменяется атомарно после каждой попытки; при прерывании manifest остаётся `incomplete`, уже полученные ответы сохраняются, отсутствующие пары имеют `not_run` и неизвестное время. Report проверяет snapshots, идентичность пар и retry-цепочки и пересчитывает scoring по целому ответу.
+
+Каждая попытка дополнительно хранит `upstream_provider` и `reasoning_evidence`. `upstream_provider` — короткое имя сервера, если OpenRouter его сообщил; необычное или отсутствующее значение остаётся `null` и не меняет статус. Manifest и leaderboard перечисляют наблюдавшиеся upstream по моделям: маршрутизация не закреплена, и вызовы одной модели могут обслуживаться разными серверами. `reasoning_evidence` — та же форма reasoning-полей, что и в smoke, только фиксированные метки и признаки без текста и подписей; report отклоняет сохранённые значения вне этого формата. Оба поля — наблюдения, не доказательство отключения reasoning. В старых запусках без этих полей report записывает `null`.
 
 Accuracy, exact match и coverage используют полный знаменатель; сохраняются статусы и разбивка по категориям. Latency реального вызова измеряется монотонным таймером; среднее/медиана берутся только по `ok`, включая неверные ответы. Usage хранится по каждой попытке, отсутствующие счётчики не вычисляются. Стоимость не собирается: `null` / `N/A` с причиной. Файл `leaderboard.md` внутри mock-каталога явно помечен **OFFLINE SYNTHETIC**, неполный запуск — **incomplete**. Публикация корневого leaderboard и реальный benchmark не входят в текущий этап. Риск лимита токенов из [Task 5 review](docs/TASK5_REVIEW.md) остаётся открытым.
 
@@ -185,7 +194,7 @@ scores = score_response(
 
 `ModelAdapter` задаёт синхронный метод `generate(request) -> response` и сам использует только стандартную библиотеку. Плагинов и registry нет; конкретная интеграция OpenRouter описана ниже. Таймер, ограниченные повторы, `attempts`, `error` и `total_elapsed_ms` относятся к runner.
 
-Минимальное расширение для review issue #3 — необязательный `get_diagnostic()`, по умолчанию возвращающий `{}`. OpenRouter возвращает копию безопасных `http_status`, `error_code`, `request_attempted`, `retry_after_s`; тело ошибки и заголовки туда не попадают. Исходные восемь полей ModelResponse, `generate()` и прежний `last_diagnostic` сохранены. Без диагностики `api_error` не считается сетевым сбоем и не повторяется; известный `timeout` допускает повтор по общему правилу.
+Минимальное расширение для review issue #3 — необязательный `get_diagnostic()`, по умолчанию возвращающий `{}`. OpenRouter возвращает копию безопасных `http_status`, `error_code`, `request_attempted`, `retry_after_s`, `upstream_provider`; тело ошибки и заголовки туда не попадают. Необязательный `get_reasoning_evidence()` по умолчанию возвращает `None`. Исходные восемь полей ModelResponse, `generate()` и прежний `last_diagnostic` сохранены. Без диагностики `api_error` не считается сетевым сбоем и не повторяется; известный `timeout` допускает повтор по общему правилу.
 
 Offline-пример с явно синтетическим ответом:
 

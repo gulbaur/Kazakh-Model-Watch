@@ -636,3 +636,41 @@ def test_reasoning_evidence_resets_and_rejects_reflected_secrets(metadata, model
     assert adapter.get_reasoning_evidence() is None
     assert len(calls) == (1 if failure == "missing_key" else 2)
     assert TEST_KEY not in repr(response) + repr(adapter.get_diagnostic()) + repr(adapter.get_reasoning_evidence())
+
+
+@pytest.mark.parametrize(("fields", "expected"), [
+    ({"provider": "DeepInfra"}, "DeepInfra"),
+    ({"provider": "Google AI Studio"}, "Google AI Studio"),
+    ({}, None),
+    ({"provider": None}, None),
+    ({"provider": ""}, None),
+    ({"provider": 7}, None),
+    ({"provider": {"name": "DeepInfra"}}, None),
+    ({"provider": "synthetic\nmultiline"}, None),
+    ({"provider": "x" * 65}, None),
+])
+def test_upstream_provider_is_recorded_only_as_a_safe_name(metadata, model_request, fields, expected):
+    body = {**_body(), **fields}
+    adapter, calls = _adapter(metadata, body)
+    response = adapter.generate(model_request)
+    # Unknown or unusual provider values never change the response status.
+    assert response.status == "ok" and len(calls) == 1
+    assert adapter.get_diagnostic()["upstream_provider"] == expected
+    assert "upstream_provider" not in adapter.last_diagnostic
+
+
+def test_upstream_provider_is_kept_for_http_errors_and_reset_between_calls(metadata, model_request, monkeypatch):
+    adapter, calls = _adapter(metadata, {**_body(), "provider": "DeepInfra"}, status_code=502)
+    assert adapter.generate(model_request).status == "api_error"
+    assert adapter.get_diagnostic()["upstream_provider"] == "DeepInfra"
+    assert adapter.get_diagnostic()["http_status"] == 502
+    monkeypatch.delenv("OPENROUTER_API_KEY")
+    assert adapter.generate(model_request).status == "api_error"
+    assert adapter.get_diagnostic()["upstream_provider"] is None and len(calls) == 1
+
+
+def test_reflected_key_in_provider_field_is_rejected(metadata, model_request):
+    adapter, _ = _adapter(metadata, {**_body(), "provider": TEST_KEY})
+    assert adapter.generate(model_request).status == "api_error"
+    assert adapter.get_diagnostic()["error_code"] == "sensitive_response"
+    assert adapter.get_diagnostic()["upstream_provider"] is None

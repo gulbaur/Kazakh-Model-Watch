@@ -132,6 +132,10 @@ class ModelAdapter(ABC):
         """
         return {}
 
+    def get_reasoning_evidence(self) -> dict | None:
+        """Optional fixed-label reasoning field shapes; None when unknown."""
+        return None
+
 
 class MockAdapter(ModelAdapter):
     """Return a preset synthetic response; never call a provider or measure time.

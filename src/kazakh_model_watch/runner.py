@@ -16,7 +16,8 @@ from .config import load_config
 from .dataset import load_dataset
 from .model_adapter import ModelAdapter, ModelRequest, ModelResponse, MockAdapter
 from .openrouter_adapter import OpenRouterAdapter, _contains_secret
-from .reporting import RunError, apply_attempt, atomic_write, digest, missing_response, report, retry_delay, safe_diagnostic, schedule, write_json
+from .reporting import (RunError, apply_attempt, atomic_write, digest, missing_response, report, retry_delay, safe_diagnostic,
+                        safe_reasoning_evidence, schedule, upstream_providers, write_json)
 
 
 def _utc() -> str:
@@ -36,6 +37,7 @@ def _git_state() -> dict:
 def _returned_ids(manifest: dict, rows: list[dict]) -> None:
     for model in manifest["models"]:
         model["returned_model_ids"] = sorted({attempt["returned_model_id"] for row in rows if row["model_key"] == model["key"] for attempt in row["attempts"] if attempt["returned_model_id"] is not None})
+        model["upstream_providers"] = upstream_providers(rows, model["key"])
     manifest["actual_adapter_attempt_order"] = [
         {"item_id": row["item_id"], "model_key": row["model_key"], "attempt_number": attempt["attempt_number"]}
         for row in rows for attempt in row["attempts"]
@@ -115,7 +117,7 @@ def run_benchmark(
         "pair_order": [{"item_id": item["id"], "model_key": model["key"]} for item, model in plan],
         "actual_adapter_attempt_order": [],
         "item_order": list(dict.fromkeys(item["id"] for item, _ in plan)),
-        "models": [{"key": m["key"], "provider": m["provider"], "requested_model_id": m["model_id"], "returned_model_ids": []} for m in config["models"]],
+        "models": [{"key": m["key"], "provider": m["provider"], "requested_model_id": m["model_id"], "returned_model_ids": [], "upstream_providers": []} for m in config["models"]],
         "python_version": platform.python_version(), "unicode_version": unicodedata.unidata_version,
         "dependencies": _dependency_versions(),
         "os": platform.platform(), "runner": "sequential-python", **_git_state(),
@@ -147,28 +149,30 @@ def run_benchmark(
                     if not isinstance(response, ModelResponse):
                         raise TypeError("invalid response")
                     diagnostic = safe_diagnostic(adapter.get_diagnostic())
+                    # Fixed labels only; an adapter returning anything else fails the attempt.
+                    evidence = safe_reasoning_evidence(adapter.get_reasoning_evidence())
                 except (KeyboardInterrupt, SystemExit):
                     ended = clock() if live else None
                     interrupted = True
                     response = ModelResponse(status="api_error", raw_response=None, requested_model_id=model["model_id"])
-                    diagnostic = safe_diagnostic({"error_code": "interrupted"})
+                    diagnostic, evidence = safe_diagnostic({"error_code": "interrupted"}), None
                 except Exception:
                     ended = clock() if live else None
                     response = ModelResponse(status="api_error", raw_response=None, requested_model_id=model["model_id"])
-                    diagnostic = safe_diagnostic({"error_code": "adapter_exception"})
+                    diagnostic, evidence = safe_diagnostic({"error_code": "adapter_exception"}), None
                 elapsed = max(0.0, (ended - started) * 1000) if live else None
                 if response.status == "not_run":
                     response = ModelResponse(status="api_error", raw_response=None, requested_model_id=model["model_id"])
-                    diagnostic = safe_diagnostic({"error_code": "invalid_adapter_response"})
+                    diagnostic, evidence = safe_diagnostic({"error_code": "invalid_adapter_response"}), None
                 if response.requested_model_id != model["model_id"]:
                     response = ModelResponse(status="api_error", raw_response=None, requested_model_id=model["model_id"])
-                    diagnostic = safe_diagnostic({"error_code": "unexpected_model_id"})
-                if any(_contains_secret(asdict(response), secret) for secret in secrets):
+                    diagnostic, evidence = safe_diagnostic({"error_code": "unexpected_model_id"}), None
+                if any(_contains_secret([asdict(response), diagnostic], secret) for secret in secrets):
                     response = ModelResponse(status="api_error", raw_response=None, requested_model_id=model["model_id"])
-                    diagnostic = safe_diagnostic({"error_code": "sensitive_response"})
+                    diagnostic, evidence = safe_diagnostic({"error_code": "sensitive_response"}), None
                 response = replace(response, latency_ms=elapsed if live and response.status == "ok" else None)
                 delay = retry_delay(response, diagnostic) if number == 1 and not interrupted else None
-                attempt = {**asdict(response), **diagnostic, "attempt_number": number, "elapsed_ms": elapsed,
+                attempt = {**asdict(response), **diagnostic, "reasoning_evidence": evidence, "attempt_number": number, "elapsed_ms": elapsed,
                            "retry_delay_s": delay, "retry_wait_completed": False if delay is not None else None,
                            "cost": None, "cost_unknown_reason": "billing_not_collected"}
                 apply_attempt(row, attempt, item, max(0.0, (clock() - pair_started) * 1000) if live else None)

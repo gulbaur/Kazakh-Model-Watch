@@ -351,3 +351,20 @@ def test_gemini_evidence_is_saved_without_payloads_and_still_stops(local_io, mon
     assert saved["run_status"] == "stopped" and saved["stop_reason"] == "response_not_ok"
     serialized = (local_io[1] / "synthetic/diagnostics.json").read_text(encoding="utf-8") + capsys.readouterr().out
     assert all(text not in serialized for text in (KEY, "synthetic private thought", "synthetic opaque signature", "synthetic private type"))
+
+
+def test_upstream_provider_is_saved_for_each_probe(local_io, monkeypatch):
+    def handler(_, model_id, number):
+        return httpx.Response(200, json={**_body(model_id), **({"provider": "Synthetic Upstream"} if number == 1 else {})})
+    calls = _transport(monkeypatch, handler)
+    assert smoke.main(LIVE) == 0 and len(calls) == 2
+    first, second = _saved(local_io[1])["responses"]
+    assert first["upstream_provider"] == "Synthetic Upstream" and second["upstream_provider"] is None
+    assert first["checks"] == second["checks"] == []
+
+
+def test_not_run_and_unfinished_rows_have_unknown_upstream(local_io, monkeypatch):
+    calls = _transport(monkeypatch, lambda *_: httpx.Response(500, json={"error": {"message": "synthetic"}}))
+    assert smoke.main(LIVE) == 1 and len(calls) == 1
+    first, second = _saved(local_io[1])["responses"]
+    assert first["upstream_provider"] is None and second["upstream_provider"] is None
