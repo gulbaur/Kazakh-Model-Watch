@@ -95,6 +95,8 @@ def test_two_successful_probes_use_fixed_order_payload_and_safe_local_fields(loc
         assert row["raw_response"] == "  ҚАЛАҒА\n" and row["request_id"] == "synthetic-smoke-request"
         assert row["usage"] == {"completion_tokens": 2, "completion_tokens_details.reasoning_tokens": 0}
         assert row["latency_ms"] == row["elapsed_ms"] == 125 and row["checks"] == []
+        assert row["reasoning_evidence"]["reasoning_details"] == {"present": False, "type": "null", "nonempty": False}
+        assert row["reasoning_evidence"]["detail_types"] == []
     assert path.read_bytes() == before
     assert KEY not in (output / "synthetic/diagnostics.json").read_text(encoding="utf-8")
     assert set((output / "synthetic").iterdir()) == {output / "synthetic/diagnostics.json"}
@@ -110,6 +112,7 @@ def test_first_http_error_does_not_retry_or_call_second(local_io, monkeypatch, c
     assert saved["responses"][0]["latency_ms"] is None and saved["responses"][0]["elapsed_ms"] == 125
     second = saved["responses"][1]
     assert second["status"] == "not_run" and second["request_attempted"] is False
+    assert saved["responses"][0]["reasoning_evidence"] is None and second["reasoning_evidence"] is None
     assert all(second[field] is None for field in ("raw_response", "usage", "latency_ms", "elapsed_ms", "http_status"))
 
 
@@ -183,6 +186,8 @@ def test_first_checkpoint_exists_before_second_error(local_io, monkeypatch):
         if number == 2:
             first = _saved(local_io[1])["responses"][0]
             assert first["status"] == "ok" and first["raw_response"] == "  ҚАЛАҒА\n"
+            assert first["reasoning_evidence"]["detail_types"] == []
+            assert _saved(local_io[1])["responses"][1]["reasoning_evidence"] is None
             return httpx.Response(500, json={"error": {"message": "synthetic second failure"}})
         return httpx.Response(200, json=_body(model_id))
     calls = _transport(monkeypatch, handler)
@@ -260,6 +265,7 @@ def test_checkpoint_write_failure_blocks_second_without_error_text(local_io, mon
     assert smoke.main(LIVE) == 1 and len(calls) == 1
     assert KEY not in capsys.readouterr().out
     assert _saved(local_io[1])["responses"][0]["error_code"] == "unfinished_attempt"
+    assert _saved(local_io[1])["responses"][0]["reasoning_evidence"] is None
 
 
 def test_interrupted_call_is_not_retried_and_second_is_not_run(local_io, monkeypatch):
@@ -270,6 +276,7 @@ def test_interrupted_call_is_not_retried_and_second_is_not_run(local_io, monkeyp
     saved = _saved(local_io[1])
     assert saved["run_status"] == "interrupted"
     assert saved["responses"][0]["error_code"] == "interrupted" and saved["responses"][1]["status"] == "not_run"
+    assert all(row["reasoning_evidence"] is None for row in saved["responses"])
 
 
 def test_reflected_key_is_never_saved_or_printed(local_io, monkeypatch, capsys, caplog):
@@ -278,6 +285,7 @@ def test_reflected_key_is_never_saved_or_printed(local_io, monkeypatch, capsys, 
     assert KEY not in capsys.readouterr().out + caplog.text + (local_io[1] / "synthetic/diagnostics.json").read_text(encoding="utf-8")
     row = _saved(local_io[1])["responses"][0]
     assert row["raw_response"] is None and row["error_code"] == "sensitive_response"
+    assert row["reasoning_evidence"] is None
 
 
 def test_zero_usage_and_zero_measured_time_stay_zero(local_io, monkeypatch):
@@ -317,3 +325,29 @@ def test_key_in_output_path_or_public_metadata_fails_without_leak(local_io, monk
     calls = _transport(monkeypatch)
     assert smoke.main(args) == 1 and calls == [] and not local_io[1].exists()
     assert KEY not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("detail_type", ["reasoning.text", "reasoning.summary", "reasoning.encrypted", "synthetic private type"])
+def test_gemini_evidence_is_saved_without_payloads_and_still_stops(local_io, monkeypatch, capsys, detail_type):
+    def handler(_, model_id, number):
+        body = _body(model_id, content="5")
+        if number == 2:
+            body["choices"][0]["message"]["reasoning_details"] = [{
+                "type": detail_type,
+                "text": "synthetic private thought" if detail_type != "reasoning.encrypted" else "",
+                "data": "synthetic opaque signature" if detail_type == "reasoning.encrypted" else "",
+            }]
+        return httpx.Response(200, json=body)
+    calls = _transport(monkeypatch, handler)
+    assert smoke.main(LIVE) == 1 and len(calls) == 2
+    saved = _saved(local_io[1])
+    first, second = saved["responses"]
+    assert first["status"] == "ok" and first["reasoning_evidence"]["detail_types"] == []
+    assert second["status"] == "api_error" and second["error_code"] == "reasoning_not_disabled"
+    assert second["reasoning_evidence"]["detail_types"] == [detail_type if detail_type.startswith("reasoning.") else "unknown"]
+    assert second["reasoning_evidence"]["detail_text_nonempty"] is (detail_type != "reasoning.encrypted")
+    assert second["reasoning_evidence"]["detail_data_nonempty"] is (detail_type == "reasoning.encrypted")
+    assert second["usage"]["completion_tokens_details.reasoning_tokens"] == 0
+    assert saved["run_status"] == "stopped" and saved["stop_reason"] == "response_not_ok"
+    serialized = (local_io[1] / "synthetic/diagnostics.json").read_text(encoding="utf-8") + capsys.readouterr().out
+    assert all(text not in serialized for text in (KEY, "synthetic private thought", "synthetic opaque signature", "synthetic private type"))
